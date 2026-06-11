@@ -28,7 +28,7 @@ const CACHE_DIR = join(REPO_DIR, "cache");
 const LEGACY_LINK = join(process.cwd(), ".plmhub.json");
 
 export type Config = { token?: string; apiUrl?: string };
-export type Link = { project: string; app?: string };
+export type Link = { project: string; app?: string; database?: string };
 export type WorkState = { problem?: string; branch?: string; startedAt?: string };
 export type QueuedEvent = { path: string; method: string; body: unknown; createdAt: string };
 

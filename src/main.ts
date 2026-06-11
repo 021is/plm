@@ -72,6 +72,14 @@ const HELP = `plm — git for your product model · push it to PLMHub
   plm work <problem-id>                    start a problem: branch prob/<id> + tracked
   plm commit -m "…" [--for <problem-id>]   git commit + report who/branch/problem to the hub
   plm done [--solution "…"]                mark the active problem solved
+  plm decide "<title>" [--why "…"]         log a decision (the reason matters)
+  plm decisions [--head N|--tail N|--n N]  list decisions with reasons (default newest 20)
+  plm goal "<title>" [--why "…"]           raise a goal
+  plm goals [--head N|--tail N]            list goals with reasons + progress
+  plm problem "<title>" --goal <goal-id>   cut a problem under a goal
+  plm problem <prob_…> --status solving    update a problem (--title/--why/--solution too)
+  plm problems [--status x] [--goal g]     list problems (+ who is on them)
+  plm comment <dec_…|prob_…> "<text>"      discuss a decision or problem
   plm map                                  the project map (ETag-cached, works offline)
   plm queue [--flush]                      show / deliver the offline outbox
   plm <any git command>                    passes straight through to git
@@ -79,8 +87,7 @@ const HELP = `plm — git for your product model · push it to PLMHub
 Offline-first: .plmhub/ is a directory (like .git). Hub writes that can't be
 delivered land in .plmhub/queue/ and flush on the next online command. Git
 commands always work. PLMHub never connects to your code or database — plm
-pushes only the model. Coming next: plm work <problem-id> · plm commit · plm
-done · plm map · plm mcp.`;
+pushes only the model. Coming next: plm mcp.`;
 
 async function main(): Promise<void> {
   // opportunistic outbox flush: cheap no-op when empty, never fatal
@@ -224,6 +231,7 @@ async function main(): Promise<void> {
       );
       break;
     }
+    case "solve":
     case "done": {
       const link = loadLink();
       if (!link) die("not linked. run: plm link <project-slug>");
@@ -243,6 +251,132 @@ async function main(): Promise<void> {
           ? `✓ ${problem} marked solved (queued — offline)`
           : `✓ ${problem} solved. Nice work.`,
       );
+      break;
+    }
+    case "decide": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      if (!sub) die('usage: plm decide "<title>" [--why "<reason>"]');
+      const r = await api<{ id: string }>(`/projects/${link.project}/decisions`, {
+        method: "POST",
+        body: JSON.stringify({ title: sub, body: flag("why") ?? "" }),
+      });
+      if (!r.ok || !r.data) die(r.error ?? "could not log the decision (offline?)");
+      console.log(`✓ decision ${r.data.id} — ${sub}`);
+      break;
+    }
+    case "decisions": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      const r = await api<
+        { id: string; title: string; body: string; created_at: string; author_name: string | null; author_email: string | null; comments: number }[]
+      >(`/projects/${link.project}/decisions`);
+      if (!r.ok || !r.data) die(r.error ?? "could not fetch decisions (offline?)");
+      // newest-first from the API; --head N = newest N (default 20), --tail N = oldest N
+      const n = Number(flag("n") ?? flag("head") ?? flag("tail") ?? 20);
+      const list = flags.tail ? r.data.slice(-n) : r.data.slice(0, n);
+      if (flags.tail) list.reverse();
+      console.log(`${r.data.length} decision${r.data.length === 1 ? "" : "s"} · showing ${list.length}${flags.tail ? " oldest" : " newest"}\n`);
+      for (const d of list) {
+        const who = d.author_name ?? d.author_email ?? "unknown";
+        const when = d.created_at.slice(0, 10);
+        console.log(`${d.id}  ${when}  ${who}  — ${d.title}${d.comments ? `  [${d.comments} comments]` : ""}`);
+        if (d.body) {
+          for (const line of d.body.split("\n")) console.log(`    ${line}`);
+        }
+        console.log("");
+      }
+      break;
+    }
+    case "goals": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      const r = await api<
+        { id: string; title: string; body: string; status: string; problems: number; solved: number }[]
+      >(`/projects/${link.project}/goals`);
+      if (!r.ok || !r.data) die(r.error ?? "could not fetch goals (offline?)");
+      const n = Number(flag("n") ?? flag("head") ?? flag("tail") ?? 20);
+      const list = flags.tail ? r.data.slice(-n).reverse() : r.data.slice(0, n);
+      console.log(`${r.data.length} goal${r.data.length === 1 ? "" : "s"} · showing ${list.length}\n`);
+      for (const g of list) {
+        console.log(`${g.id}  [${g.status}]  ${g.title}  (${g.solved}/${g.problems} solved)`);
+        if (g.body) for (const line of g.body.split("\n")) console.log(`    ${line}`);
+        console.log("");
+      }
+      break;
+    }
+    case "goal": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      if (!sub) die('usage: plm goal "<title>" [--why "<what success looks like>"]');
+      const r = await api<{ id: string }>(`/projects/${link.project}/goals`, {
+        method: "POST",
+        body: JSON.stringify({ title: sub, body: flag("why") ?? "" }),
+      });
+      if (!r.ok || !r.data) die(r.error ?? "could not raise the goal (offline?)");
+      console.log(`✓ goal ${r.data.id} — ${sub}`);
+      break;
+    }
+    case "problems": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      const qs = new URLSearchParams();
+      if (flag("status")) qs.set("status", flag("status") as string);
+      if (flag("goal")) qs.set("goal", flag("goal") as string);
+      const r = await api<
+        { id: string; title: string; status: string; assignees: { name: string | null; email: string }[] }[]
+      >(`/projects/${link.project}/problems${qs.size ? `?${qs}` : ""}`);
+      if (!r.ok || !r.data) die(r.error ?? "could not fetch problems (offline?)");
+      const n = Number(flag("n") ?? flag("head") ?? flag("tail") ?? 20);
+      const list = flags.tail ? r.data.slice(-n).reverse() : r.data.slice(0, n);
+      console.log(`${r.data.length} problem${r.data.length === 1 ? "" : "s"} · showing ${list.length}\n`);
+      for (const pr of list) {
+        const who = pr.assignees.map((a) => a.name ?? a.email).join(", ");
+        console.log(`${pr.id}  [${pr.status}]  ${pr.title}${who ? `  → ${who}` : ""}`);
+      }
+      break;
+    }
+    case "problem": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      if (!sub) die('usage: plm problem "<title>" --goal <goal-id> [--why "…"]  ·  plm problem <prob_…> [--status open|solving|solved] [--title "…"] [--why "…"] [--solution "…"]');
+      if (sub.startsWith("prob_")) {
+        // update an existing problem
+        const patch: Record<string, string> = {};
+        if (flag("status")) patch.status = flag("status") as string;
+        if (flag("title")) patch.title = flag("title") as string;
+        if (flag("why")) patch.problem = flag("why") as string;
+        if (flag("solution")) patch.solution = flag("solution") as string;
+        if (!Object.keys(patch).length) die("nothing to update: pass --status / --title / --why / --solution");
+        const r = await api(`/projects/${link.project}/problems/${sub}`, {
+          method: "PATCH",
+          body: JSON.stringify(patch),
+        });
+        if (!r.ok) die(r.error ?? "could not update the problem (offline?)");
+        console.log(`✓ updated ${sub} (${Object.keys(patch).join(", ")})`);
+        break;
+      }
+      const goal = flag("goal");
+      if (!goal) die('usage: plm problem "<title>" --goal <goal-id> [--why "<context>"]');
+      const r = await api<{ id: string }>(`/projects/${link.project}/goals/${goal}/problems`, {
+        method: "POST",
+        body: JSON.stringify({ title: sub, problem: flag("why") ?? "" }),
+      });
+      if (!r.ok || !r.data) die(r.error ?? "could not cut the problem (offline?)");
+      console.log(`✓ problem ${r.data.id} — ${sub}  (plm work ${r.data.id})`);
+      break;
+    }
+    case "comment": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      const text = positionals[2] ?? flag("m");
+      if (!sub || !text) die('usage: plm comment <dec_…|prob_…> "<text>"');
+      const path = sub.startsWith("dec_")
+        ? `/projects/${link.project}/decisions/${sub}/comments`
+        : `/projects/${link.project}/problems/${sub}/comments`;
+      const r = await api(path, { method: "POST", body: JSON.stringify({ body: text }) });
+      if (!r.ok) die(r.error ?? "could not comment (offline?)");
+      console.log(`✓ commented on ${sub}`);
       break;
     }
     case "map": {
