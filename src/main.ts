@@ -210,8 +210,13 @@ async function main(): Promise<void> {
       if (!link) die("not linked. run: plm link <project-slug>");
       const state = loadState();
       const problem = flag("for") ?? state.problem;
-      // git commit with all original args, plus a PLM trailer when a problem is active
-      const args = process.argv.slice(3);
+      // git commit with all original args minus plm-only flags (--for is ours,
+      // git rejects it), plus a PLM trailer when a problem is active
+      const args = process.argv.slice(3).filter((a, i, all) => {
+        if (a === "--for") return false;
+        if (all[i - 1] === "--for") return false;
+        return true;
+      });
       if (problem) args.push("--trailer", `PLM: ${problem}`);
       const c = spawnSync("git", ["commit", ...args], { stdio: "inherit" });
       if (c.status !== 0) process.exit(c.status ?? 1);
