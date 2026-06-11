@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { api, apiOrQueue, flushQueue } from "./api.ts";
-import { apiUrl, loadConfig, loadLink, queuedEvents, saveConfig, saveLink } from "./config.ts";
+import { apiUrl, loadConfig, loadLink, loadState, queuedEvents, saveConfig, saveLink, saveState } from "./config.ts";
 import { introspect, type Schema } from "./introspect.ts";
 
 const argv = process.argv.slice(2);
@@ -69,6 +69,9 @@ const HELP = `plm — git for your product model · push it to PLMHub
   plm db push --url <DATABASE_URL>         introspect a live Postgres → push the ER model
   plm db push --json <file|->              push a model an agent/LLM built (no DB)
   plm db schema                            print the ER-model JSON contract
+  plm work <problem-id>                    start a problem: branch prob/<id> + tracked
+  plm commit -m "…" [--for <problem-id>]   git commit + report who/branch/problem to the hub
+  plm done [--solution "…"]                mark the active problem solved
   plm queue [--flush]                      show / deliver the offline outbox
   plm <any git command>                    passes straight through to git
 
@@ -180,6 +183,64 @@ async function main(): Promise<void> {
         res.queued
           ? "✓ offline — queued in .plmhub/queue/ (delivers on the next online command)"
           : `✓ pushed the ER model to PLMHub → ${link.project}`,
+      );
+      break;
+    }
+    case "work": {
+      if (!sub) die("usage: plm work <problem-id>");
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      const branch = `prob/${sub.replace(/^prob_/, "").slice(0, 12)}`;
+      const co = spawnSync("git", ["checkout", "-B", branch], { stdio: "inherit" });
+      if (co.status !== 0) process.exit(co.status ?? 1);
+      saveState({ problem: sub, branch, startedAt: new Date().toISOString() });
+      console.log(`✓ working ${sub} on branch ${branch} (plm commit will tag it)`);
+      break;
+    }
+    case "commit": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      const state = loadState();
+      const problem = flag("for") ?? state.problem;
+      // git commit with all original args, plus a PLM trailer when a problem is active
+      const args = process.argv.slice(3);
+      if (problem) args.push("--trailer", `PLM: ${problem}`);
+      const c = spawnSync("git", ["commit", ...args], { stdio: "inherit" });
+      if (c.status !== 0) process.exit(c.status ?? 1);
+      // read HEAD + report to the hub (async, offline-queued, never blocks)
+      const show = spawnSync("git", ["show", "-s", "--format=%H%n%an%n%ae%n%cI%n%s"], {
+        encoding: "utf8",
+      });
+      const [sha, an, ae, when, msg] = show.stdout.trim().split("\n");
+      const br = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" })
+        .stdout.trim();
+      const r = await apiOrQueue(`/projects/${link.project}/commits`, {
+        sha, branch: br, message: msg, author_name: an, author_email: ae,
+        problem_id: problem ?? null, app: link.app ?? null, committed_at: when,
+      });
+      console.log(
+        r.queued ? "✓ committed (hub sync queued — offline)" : "✓ committed + reported to PLMHub",
+      );
+      break;
+    }
+    case "done": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      const state = loadState();
+      const problem = flag("for") ?? state.problem;
+      if (!problem) die("no active problem. run: plm work <problem-id> (or pass --for)");
+      const solution = flag("solution");
+      const r = await apiOrQueue(
+        `/projects/${link.project}/problems/${problem}`,
+        { status: "solved", ...(solution ? { solution } : {}) },
+        "PATCH",
+      );
+      if (!r.ok) die(r.error ?? "could not mark solved");
+      saveState({});
+      console.log(
+        r.queued
+          ? `✓ ${problem} marked solved (queued — offline)`
+          : `✓ ${problem} solved. Nice work.`,
       );
       break;
     }

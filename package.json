@@ -1,6 +1,6 @@
 {
   "name": "@plmhub/cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "plm \u2014 git for your product model. Link a repo to PLMHub, push your apps, units and ER model, and keep working offline; agents and humans read the same map.",
   "type": "module",
   "bin": {
