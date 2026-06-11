@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { api, apiOrQueue, flushQueue } from "./api.ts";
-import { apiUrl, loadConfig, loadLink, loadState, queuedEvents, saveConfig, saveLink, saveState } from "./config.ts";
+import { cachePath, apiUrl, loadConfig, loadLink, loadState, queuedEvents, saveConfig, saveLink, saveState } from "./config.ts";
 import { introspect, type Schema } from "./introspect.ts";
 
 const argv = process.argv.slice(2);
@@ -72,6 +72,7 @@ const HELP = `plm — git for your product model · push it to PLMHub
   plm work <problem-id>                    start a problem: branch prob/<id> + tracked
   plm commit -m "…" [--for <problem-id>]   git commit + report who/branch/problem to the hub
   plm done [--solution "…"]                mark the active problem solved
+  plm map                                  the project map (ETag-cached, works offline)
   plm queue [--flush]                      show / deliver the offline outbox
   plm <any git command>                    passes straight through to git
 
@@ -242,6 +243,42 @@ async function main(): Promise<void> {
           ? `✓ ${problem} marked solved (queued — offline)`
           : `✓ ${problem} solved. Nice work.`,
       );
+      break;
+    }
+    case "map": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      const mapFile = cachePath("map.json");
+      const etagFile = cachePath("map.etag");
+      let cachedEtag = "";
+      try { cachedEtag = readFileSync(etagFile, "utf8").trim(); } catch {}
+      const t = loadConfig().token ?? process.env.PLMHUB_TOKEN;
+      try {
+        const res = await fetch(`${apiUrl()}/projects/${link.project}/map`, {
+          headers: { ...(t ? { Authorization: `Bearer ${t}` } : {}),
+                     ...(cachedEtag ? { "If-None-Match": cachedEtag } : {}) },
+        });
+        if (res.status === 304) {
+          console.log(readFileSync(mapFile, "utf8"));
+          break;
+        }
+        const env = (await res.json()) as { ok: boolean; data?: unknown };
+        if (!env.ok) die("could not fetch the map");
+        const body = JSON.stringify(env.data, null, 2);
+        const { writeFileSync } = await import("node:fs");
+        writeFileSync(mapFile, body);
+        const et = res.headers.get("etag");
+        if (et) writeFileSync(etagFile, et);
+        console.log(body);
+      } catch {
+        // offline: serve the cache, marked stale
+        try {
+          console.error("plm: offline — serving the cached map");
+          console.log(readFileSync(mapFile, "utf8"));
+        } catch {
+          die("offline and no cached map yet");
+        }
+      }
       break;
     }
     case "queue": {
