@@ -74,6 +74,9 @@ const HELP = `plm — git for your product model · push it to PLMHub
   plm done [--solution "…"]                mark the active problem solved
   plm decide "<title>" [--why "…"]         log a decision (the reason matters)
   plm decisions [--head N|--tail N|--n N]  list decisions with reasons (default newest 20)
+  plm decision <dec_…> --why "…"           update a decision (--title/--status/--superseded-by)
+  plm decision <dec_…> --status superseded --superseded-by <dec_…>   close a decision
+  plm decision <dec_…> --delete --yes      hard delete (admin; prefer superseding)
   plm goal "<title>" [--why "…"]           raise a goal
   plm goals [--head N|--tail N]            list goals with reasons + progress
   plm problem "<title>" --goal <goal-id>   cut a problem under a goal
@@ -272,6 +275,32 @@ async function main(): Promise<void> {
       console.log(`✓ decision ${r.data.id} — ${sub}`);
       break;
     }
+    case "decision": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      if (!sub || !sub.startsWith("dec_"))
+        die('usage: plm decision <dec_…> [--title "…"] [--why "…"] [--status active|superseded] [--superseded-by <dec_…>] [--delete --yes]');
+      if (flags.delete) {
+        if (!flags.yes) die("deleting a decision is destructive — add --yes to confirm (prefer --status superseded)");
+        const r = await api(`/projects/${link.project}/decisions/${sub}`, { method: "DELETE" });
+        if (!r.ok) die(r.error ?? "could not delete (admin only)");
+        console.log(`✓ deleted ${sub}`);
+        break;
+      }
+      const patch: Record<string, string> = {};
+      if (flag("title")) patch.title = flag("title") as string;
+      if (flag("why")) patch.body = flag("why") as string;
+      if (flag("status")) patch.status = flag("status") as string;
+      if (flag("superseded-by")) patch.superseded_by = flag("superseded-by") as string;
+      if (!Object.keys(patch).length) die("nothing to update: pass --title / --why / --status / --superseded-by");
+      const r = await api(`/projects/${link.project}/decisions/${sub}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      });
+      if (!r.ok) die(r.error ?? "could not update (author or admin only)");
+      console.log(`✓ updated ${sub} (${Object.keys(patch).join(", ")})`);
+      break;
+    }
     case "decisions": {
       const link = loadLink();
       if (!link) die("not linked. run: plm link <project-slug>");
@@ -287,7 +316,7 @@ async function main(): Promise<void> {
       for (const d of list) {
         const who = d.author_name ?? d.author_email ?? "unknown";
         const when = d.created_at.slice(0, 10);
-        console.log(`${d.id}  ${when}  ${who}  — ${d.title}${d.comments ? `  [${d.comments} comments]` : ""}`);
+        console.log(`${d.id}  ${when}  ${who}  — ${d.title}${(d as { status?: string }).status === "superseded" ? "  [superseded]" : ""}${d.comments ? `  [${d.comments} comments]` : ""}`);
         if (d.body) {
           for (const line of d.body.split("\n")) console.log(`    ${line}`);
         }
