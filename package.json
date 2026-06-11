@@ -1,0 +1,51 @@
+{
+  "name": "@plmhub/cli",
+  "version": "0.1.0",
+  "description": "plm \u2014 git for your product model. Link a repo to PLMHub, push your apps, units and ER model, and keep working offline; agents and humans read the same map.",
+  "type": "module",
+  "bin": {
+    "plm": "./dist/plm.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "dev": "bun run src/main.ts",
+    "build": "bun build ./src/main.ts --target node --outfile dist/plm.js --banner \"#!/usr/bin/env node\"",
+    "build:linux-x64": "bun build ./src/main.ts --compile --target=bun-linux-x64 --outfile dist/plm-linux-x64",
+    "build:linux-arm64": "bun build ./src/main.ts --compile --target=bun-linux-arm64 --outfile dist/plm-linux-arm64",
+    "build:darwin-arm64": "bun build ./src/main.ts --compile --target=bun-darwin-arm64 --outfile dist/plm-darwin-arm64",
+    "build:darwin-x64": "bun build ./src/main.ts --compile --target=bun-darwin-x64 --outfile dist/plm-darwin-x64",
+    "build:windows-x64": "bun build ./src/main.ts --compile --target=bun-windows-x64 --outfile dist/plm-windows-x64.exe",
+    "prepublishOnly": "bun run build"
+  },
+  "dependencies": {
+    "postgres": "^3.4.9"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^25.9.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/021is/plm.git"
+  },
+  "homepage": "https://plmhub.eu",
+  "bugs": {
+    "url": "https://github.com/021is/plm/issues"
+  },
+  "keywords": [
+    "plmhub",
+    "plm",
+    "cli",
+    "product-model",
+    "agents",
+    "er-model",
+    "git"
+  ]
+}
