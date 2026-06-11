@@ -83,6 +83,8 @@ const HELP = `plm — git for your product model · push it to PLMHub
   plm problem <prob_…> --status solving    update a problem (--title/--why/--solution too)
   plm problems [--status x] [--goal g]     list problems (+ who is on them)
   plm comment <dec_…|prob_…> "<text>"      discuss a decision or problem
+  plm push [<git args>]                    git push, then report the branch map to the hub
+  plm sync                                 report local+remote branches to the hub
   plm map                                  the project map (ETag-cached, works offline)
   plm queue [--flush]                      show / deliver the offline outbox
   plm <any git command>                    passes straight through to git
@@ -91,6 +93,40 @@ Offline-first: .plmhub/ is a directory (like .git). Hub writes that can't be
 delivered land in .plmhub/queue/ and flush on the next online command. Git
 commands always work. PLMHub never connects to your code or database — plm
 pushes only the model. Coming next: plm mcp.`;
+
+async function syncBranches(link: { project: string; app?: string }): Promise<boolean> {
+  // local heads + remote-tracking refs → one inventory, merged by branch name
+  const refs = spawnSync(
+    "git",
+    ["for-each-ref", "--format=%(refname)%09%(objectname)", "refs/heads", "refs/remotes"],
+    { encoding: "utf8" },
+  );
+  if (refs.status !== 0) return false;
+  const inv = new Map<string, { local: boolean; remote: boolean; head_sha: string }>();
+  for (const line of refs.stdout.trim().split("\n").filter(Boolean)) {
+    const [ref, sha] = line.split("\t") as [string, string];
+    let name = "";
+    let where: "local" | "remote" | null = null;
+    if (ref.startsWith("refs/heads/")) {
+      name = ref.slice("refs/heads/".length);
+      where = "local";
+    } else if (ref.startsWith("refs/remotes/")) {
+      name = ref.slice("refs/remotes/".length).split("/").slice(1).join("/");
+      where = "remote";
+    }
+    if (!name || !where || name === "HEAD") continue;
+    const cur = inv.get(name) ?? { local: false, remote: false, head_sha: sha };
+    cur[where] = true;
+    cur.head_sha = sha;
+    inv.set(name, cur);
+  }
+  const branches = [...inv.entries()].map(([name, v]) => ({ name, ...v }));
+  const r = await apiOrQueue(`/projects/${link.project}/branches/sync`, {
+    app: link.app ?? null,
+    branches,
+  });
+  return !r.queued;
+}
 
 async function main(): Promise<void> {
   // opportunistic outbox flush: cheap no-op when empty, never fatal
@@ -239,6 +275,7 @@ async function main(): Promise<void> {
       console.log(
         r.queued ? "✓ committed (hub sync queued — offline)" : "✓ committed + reported to PLMHub",
       );
+      await syncBranches(link);
       break;
     }
     case "solve":
@@ -413,6 +450,22 @@ async function main(): Promise<void> {
       const r = await api(path, { method: "POST", body: JSON.stringify({ body: text }) });
       if (!r.ok) die(r.error ?? "could not comment (offline?)");
       console.log(`✓ commented on ${sub}`);
+      break;
+    }
+    case "sync": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      const live = await syncBranches(link);
+      console.log(live ? "✓ branch inventory reported to PLMHub" : "✓ sync queued (offline)");
+      break;
+    }
+    case "push": {
+      // transparent git push, then tell the hub what exists where
+      const r = spawnSync("git", process.argv.slice(2), { stdio: "inherit" });
+      if (r.status !== 0) process.exit(r.status ?? 1);
+      const link = loadLink();
+      if (link) await syncBranches(link);
+      console.log("✓ pushed + branch inventory reported");
       break;
     }
     case "map": {
