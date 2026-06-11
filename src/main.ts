@@ -221,10 +221,12 @@ async function main(): Promise<void> {
       const c = spawnSync("git", ["commit", ...args], { stdio: "inherit" });
       if (c.status !== 0) process.exit(c.status ?? 1);
       // read HEAD + report to the hub (async, offline-queued, never blocks)
-      const show = spawnSync("git", ["show", "-s", "--format=%H%n%an%n%ae%n%cI%n%s"], {
+      const show = spawnSync("git", ["show", "-s", "--format=%H%n%an%n%ae%n%cI"], {
         encoding: "utf8",
       });
-      const [sha, an, ae, when, msg] = show.stdout.trim().split("\n");
+      const [sha, an, ae, when] = show.stdout.trim().split("\n");
+      // full message (subject + body) so the hub can show the whole story
+      const msg = spawnSync("git", ["show", "-s", "--format=%B"], { encoding: "utf8" }).stdout.trim();
       const br = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" })
         .stdout.trim();
       const r = await apiOrQueue(`/projects/${link.project}/commits`, {
