@@ -85,7 +85,9 @@ const HELP = `plm — git for your product model · push it to PLMHub
   plm comment <dec_…|prob_…> "<text>"      discuss a decision or problem
   plm repos · plm repo <url>               list / register project repos
   plm links · plm link-add <url>           list / register project links
-  plm secrets · plm secret <KEY> --vault "<item>"   list / register secret POINTERS (values stay in the vault)
+  plm secrets                              list secrets (stored-here or referenced)
+  plm secret <KEY> --at "<where>"          record where a value lives (reference)
+  plm secret <KEY> --value <v>             store the value in PLMHub (inline)
   plm secret-rm <KEY>                      remove a stale pointer
   plm secrets-how [--set "…" | --stdin]    read / write how agents fetch real values
   plm push [<git args>]                    git push, then report the branch map to the hub
@@ -526,34 +528,39 @@ async function main(): Promise<void> {
       const link = loadLink();
       if (!link) die("not linked. run: plm link <project-slug>");
       const r = await api<
-        { id: string; key: string; description: string | null; vault_ref: string; vault_field: string }[]
+        { id: string; key: string; description: string | null; has_value: boolean; location: string | null }[]
       >(`/projects/${link.project}/secrets`);
       if (!r.ok || !r.data) die(r.error ?? "could not fetch secrets");
       const proj = await api<{ secrets_instructions?: string }>(`/projects/${link.project}`);
       if (proj.ok && proj.data?.secrets_instructions) {
         console.log(`HOW TO FETCH:\n${proj.data.secrets_instructions}\n`);
       }
-      for (const sec of r.data)
-        console.log(`${sec.key}  →  ${sec.vault_ref} · ${sec.vault_field}${sec.description ? `  (${sec.description})` : ""}`);
+      for (const sec of r.data) {
+        const where = sec.has_value ? "[stored here]" : `→ ${sec.location ?? "(no location)"}`;
+        console.log(`${sec.key}  ${where}${sec.description ? `  (${sec.description})` : ""}`);
+      }
       break;
     }
     case "secret": {
-      // a POINTER into the vault — the value never travels through plm
+      // generic: store the value here (--value) OR record where it lives (--at)
       const link = loadLink();
       if (!link) die("not linked. run: plm link <project-slug>");
-      const ref = flag("vault");
-      if (!sub || !ref) die('usage: plm secret <KEY> --vault "<vault item name>" [--field <k>] [--desc "…"]');
+      const value = flag("value");
+      const at = flag("at") ?? flag("location");
+      if (!sub || (value === undefined && at === undefined))
+        die('usage: plm secret <KEY> --at "<where it lives>"   OR   plm secret <KEY> --value <v>  [--desc "…"] [--unit <u>]');
       const r = await api(`/projects/${link.project}/secrets`, {
         method: "POST",
         body: JSON.stringify({
           key: sub,
-          vault_ref: ref,
-          vault_field: flag("field") ?? sub,
+          value: value ?? null,
+          location: at ?? null,
           description: flag("desc") ?? null,
+          unit: flag("unit") ?? null,
         }),
       });
-      if (!r.ok) die(r.error ?? "could not register the secret pointer");
-      console.log(`✓ secret ${sub} → ${ref}`);
+      if (!r.ok) die(r.error ?? "could not register the secret");
+      console.log(value !== undefined ? `✓ secret ${sub} stored here` : `✓ secret ${sub} → ${at}`);
       break;
     }
     case "secret-rm": {
