@@ -94,6 +94,8 @@ const HELP = `plm — git for your product model · push it to PLMHub
   plm secret-edit <KEY> [--rename|--at|--value|--desc|--unit]   update a secret
   plm secret-rm <KEY>                      remove a secret
   plm secrets-how [--set "…" | --stdin]    read / write how agents fetch real values
+  plm tasks · plm task "<title>"           your private todos (plm task <id> --done|--rm)
+  plm notes · plm note "<title>" [--stdin] your private notes (plm note <id> [--set|--rm])
   plm push [<git args>]                    git push, then report the branch map to the hub
   plm sync                                 report local+remote branches to the hub
   plm map                                  the project map (ETag-cached, works offline)
@@ -529,6 +531,83 @@ async function main(): Promise<void> {
       });
       if (!r.ok) die(r.error ?? "could not push units");
       console.log(`✓ pushed ${payload.units?.length ?? 0} units to app ${payload.app}${payload.replace ? " (replace)" : ""}`);
+      break;
+    }
+    case "tasks": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      const r = await api<{ id: string; title: string; done: boolean }[]>(`/projects/${link.project}/me/tasks`);
+      if (!r.ok || !r.data) die(r.error ?? "could not fetch tasks");
+      if (!r.data.length) { console.log("no tasks"); break; }
+      for (const t of r.data) console.log(`${t.done ? "[x]" : "[ ]"} ${t.id}  ${t.title}`);
+      break;
+    }
+    case "task": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      if (!sub) die('usage: plm task "<title>"   ·   plm task <ptask_…> --done|--undone|--title "…"|--rm');
+      if (sub.startsWith("ptask_")) {
+        if (flags.rm) {
+          const r = await api(`/projects/${link.project}/me/tasks/${sub}`, { method: "DELETE" });
+          if (!r.ok) die(r.error ?? "could not delete");
+          console.log(`✓ deleted ${sub}`);
+          break;
+        }
+        const patch: Record<string, unknown> = {};
+        if (flags.done) patch.done = true;
+        if (flags.undone) patch.done = false;
+        if (flag("title")) patch.title = flag("title");
+        if (!Object.keys(patch).length) die("nothing to change: --done/--undone/--title/--rm");
+        const r = await api(`/projects/${link.project}/me/tasks/${sub}`, { method: "PATCH", body: JSON.stringify(patch) });
+        if (!r.ok) die(r.error ?? "could not update");
+        console.log(`✓ updated ${sub}`);
+        break;
+      }
+      const r = await api<{ id: string }>(`/projects/${link.project}/me/tasks`, { method: "POST", body: JSON.stringify({ title: sub }) });
+      if (!r.ok || !r.data) die(r.error ?? "could not add");
+      console.log(`✓ task ${r.data.id} — ${sub}`);
+      break;
+    }
+    case "notes": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      const r = await api<{ id: string; title: string; snippet: string }[]>(`/projects/${link.project}/me/notes`);
+      if (!r.ok || !r.data) die(r.error ?? "could not fetch notes");
+      if (!r.data.length) { console.log("no notes"); break; }
+      for (const n of r.data) console.log(`${n.id}  ${n.title}${n.snippet ? `  — ${n.snippet}` : ""}`);
+      break;
+    }
+    case "note": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      if (!sub) die('usage: plm note "<title>" [--body "…"|--stdin]   ·   plm note <note_…> [--title|--set|--stdin|--rm]');
+      const isId = sub.startsWith("note_") || sub.startsWith("pnote_");
+      if (isId) {
+        if (flags.rm) {
+          const r = await api(`/projects/${link.project}/me/notes/${sub}`, { method: "DELETE" });
+          if (!r.ok) die(r.error ?? "could not delete");
+          console.log(`✓ deleted ${sub}`);
+          break;
+        }
+        const patch: Record<string, unknown> = {};
+        if (flag("title")) patch.title = flag("title");
+        if (flag("set") !== undefined) patch.body = flag("set");
+        if (flags.stdin === true) patch.body = readFileSync(0, "utf8");
+        if (!Object.keys(patch).length) {
+          const r = await api<{ title: string; body: string }>(`/projects/${link.project}/me/notes/${sub}`);
+          if (!r.ok || !r.data) die(r.error ?? "not found");
+          console.log(r.data.body);
+          break;
+        }
+        const r = await api(`/projects/${link.project}/me/notes/${sub}`, { method: "PATCH", body: JSON.stringify(patch) });
+        if (!r.ok) die(r.error ?? "could not update");
+        console.log(`✓ updated ${sub}`);
+        break;
+      }
+      const body = flags.stdin === true ? readFileSync(0, "utf8") : (flag("body") ?? "");
+      const r = await api<{ id: string }>(`/projects/${link.project}/me/notes`, { method: "POST", body: JSON.stringify({ title: sub, body }) });
+      if (!r.ok || !r.data) die(r.error ?? "could not create");
+      console.log(`✓ note ${r.data.id} — ${sub}`);
       break;
     }
     case "repos": {
