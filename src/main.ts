@@ -87,6 +87,7 @@ const HELP = `plm — git for your product model · push it to PLMHub
   plm links · plm link-add <url>           list / register project links
   plm secrets · plm secret <KEY> --vault "<item>"   list / register secret POINTERS (values stay in the vault)
   plm secret-rm <KEY>                      remove a stale pointer
+  plm secrets-how [--set "…" | --stdin]    read / write how agents fetch real values
   plm push [<git args>]                    git push, then report the branch map to the hub
   plm sync                                 report local+remote branches to the hub
   plm map                                  the project map (ETag-cached, works offline)
@@ -499,6 +500,26 @@ async function main(): Promise<void> {
       });
       if (!r.ok) die(r.error ?? "could not add the link");
       console.log(`✓ link ${sub}`);
+      break;
+    }
+    case "secrets-how": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      const set = flag("set");
+      const fromStdin = flags.stdin === true;
+      if (set !== undefined || fromStdin) {
+        const text = fromStdin ? readFileSync(0, "utf8") : (set as string);
+        const r = await api(`/projects/${link.project}`, {
+          method: "PATCH",
+          body: JSON.stringify({ secrets_instructions: text }),
+        });
+        if (!r.ok) die(r.error ?? "could not update (project admin only)");
+        console.log("✓ secrets instructions updated");
+        break;
+      }
+      const r = await api<{ secrets_instructions?: string }>(`/projects/${link.project}`);
+      if (!r.ok || !r.data) die(r.error ?? "could not fetch the project");
+      console.log(r.data.secrets_instructions || "(no instructions set — plm secrets-how --set \"…\")");
       break;
     }
     case "secrets": {
