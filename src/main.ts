@@ -88,6 +88,7 @@ const HELP = `plm — git for your product model · push it to PLMHub
   plm secrets                              list secrets (stored-here or referenced)
   plm secret <KEY> --at "<where>"          record where a value lives (reference)
   plm secret <KEY> --value <v>             store the value in PLMHub (inline)
+  plm secret-get <KEY>                     resolve a secret: value (inline) or where+how (reference)
   plm secret-edit <KEY> [--rename|--at|--value|--desc|--unit]   update a secret
   plm secret-rm <KEY>                      remove a secret
   plm secrets-how [--set "…" | --stdin]    read / write how agents fetch real values
@@ -586,6 +587,30 @@ async function main(): Promise<void> {
       });
       if (!r.ok) die(r.error ?? "could not update");
       console.log(`✓ updated ${sub}`);
+      break;
+    }
+    case "secret-get": {
+      // one-shot for agents: resolve a secret by KEY. Inline -> prints value;
+      // reference -> prints where + how to fetch it.
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      if (!sub) die("usage: plm secret-get <KEY>");
+      const list = await api<{ id: string; key: string }[]>(`/projects/${link.project}/secrets`);
+      if (!list.ok || !list.data) die(list.error ?? "could not fetch secrets");
+      const hit = list.data.find((x) => x.key === sub);
+      if (!hit) die(`no secret named ${sub}`);
+      const r = await api<{ value: string | null; location: string | null; instructions: string | null }>(
+        `/projects/${link.project}/secrets/${hit.id}/value`,
+      );
+      if (!r.ok || !r.data) die(r.error ?? "could not resolve");
+      if (r.data.value !== null) {
+        console.log(r.data.value);
+        break;
+      }
+      console.error(`${sub} is a reference — PLMHub does not hold the value.`);
+      console.error(`WHERE: ${r.data.location ?? "(no location)"}`);
+      if (r.data.instructions) console.error(`HOW:\n${r.data.instructions}`);
+      process.exit(2);
       break;
     }
     case "secret-rm": {
