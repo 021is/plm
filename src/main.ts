@@ -88,7 +88,8 @@ const HELP = `plm — git for your product model · push it to PLMHub
   plm secrets                              list secrets (stored-here or referenced)
   plm secret <KEY> --at "<where>"          record where a value lives (reference)
   plm secret <KEY> --value <v>             store the value in PLMHub (inline)
-  plm secret-rm <KEY>                      remove a stale pointer
+  plm secret-edit <KEY> [--rename|--at|--value|--desc|--unit]   update a secret
+  plm secret-rm <KEY>                      remove a secret
   plm secrets-how [--set "…" | --stdin]    read / write how agents fetch real values
   plm push [<git args>]                    git push, then report the branch map to the hub
   plm sync                                 report local+remote branches to the hub
@@ -561,6 +562,30 @@ async function main(): Promise<void> {
       });
       if (!r.ok) die(r.error ?? "could not register the secret");
       console.log(value !== undefined ? `✓ secret ${sub} stored here` : `✓ secret ${sub} → ${at}`);
+      break;
+    }
+    case "secret-edit": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      if (!sub) die('usage: plm secret-edit <KEY> [--rename <K>] [--at "<where>"] [--value <v>] [--desc "…"] [--unit <u>]');
+      const list = await api<{ id: string; key: string }[]>(`/projects/${link.project}/secrets`);
+      if (!list.ok || !list.data) die(list.error ?? "could not fetch secrets");
+      const hit = list.data.find((x) => x.key === sub);
+      if (!hit) die(`no secret named ${sub}`);
+      const patch: Record<string, unknown> = {};
+      if (flag("rename")) patch.key = flag("rename");
+      if (flag("desc") !== undefined) patch.description = flag("desc");
+      if (flag("unit") !== undefined) patch.unit = flag("unit");
+      if (flag("at") !== undefined) patch.location = flag("at");
+      if (flag("value") !== undefined) patch.value = flag("value");
+      if (flags["clear-value"]) patch.clear_value = true;
+      if (!Object.keys(patch).length) die("nothing to change");
+      const r = await api(`/projects/${link.project}/secrets/${hit.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      });
+      if (!r.ok) die(r.error ?? "could not update");
+      console.log(`✓ updated ${sub}`);
       break;
     }
     case "secret-rm": {
