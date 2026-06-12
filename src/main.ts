@@ -83,6 +83,10 @@ const HELP = `plm — git for your product model · push it to PLMHub
   plm problem <prob_…> --status solving    update a problem (--title/--why/--solution too)
   plm problems [--status x] [--goal g]     list problems (+ who is on them)
   plm comment <dec_…|prob_…> "<text>"      discuss a decision or problem
+  plm repos · plm repo <url>               list / register project repos
+  plm links · plm link-add <url>           list / register project links
+  plm secrets · plm secret <KEY> --vault "<item>"   list / register secret POINTERS (values stay in the vault)
+  plm secret-rm <KEY>                      remove a stale pointer
   plm push [<git args>]                    git push, then report the branch map to the hub
   plm sync                                 report local+remote branches to the hub
   plm map                                  the project map (ETag-cached, works offline)
@@ -450,6 +454,94 @@ async function main(): Promise<void> {
       const r = await api(path, { method: "POST", body: JSON.stringify({ body: text }) });
       if (!r.ok) die(r.error ?? "could not comment (offline?)");
       console.log(`✓ commented on ${sub}`);
+      break;
+    }
+    case "repos": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      const r = await api<{ id: string; name: string; url: string; default_branch: string }[]>(
+        `/projects/${link.project}/repos`,
+      );
+      if (!r.ok || !r.data) die(r.error ?? "could not fetch repos");
+      for (const repo of r.data) console.log(`${repo.name}  ${repo.url}  [${repo.default_branch}]`);
+      break;
+    }
+    case "repo": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      if (!sub) die('usage: plm repo <url> [--name <n>] [--branch <b>]');
+      const name = flag("name") ?? sub.replace(/\.git$/, "").split("/").filter(Boolean).pop() ?? "";
+      const r = await api(`/projects/${link.project}/repos`, {
+        method: "POST",
+        body: JSON.stringify({ url: sub, name, default_branch: flag("branch") ?? "main" }),
+      });
+      if (!r.ok) die(r.error ?? "could not add the repo");
+      console.log(`✓ repo ${name}`);
+      break;
+    }
+    case "links": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      const r = await api<{ id: string; url: string; title: string | null }[]>(
+        `/projects/${link.project}/links`,
+      );
+      if (!r.ok || !r.data) die(r.error ?? "could not fetch links");
+      for (const l of r.data) console.log(`${l.title ?? "—"}  ${l.url}`);
+      break;
+    }
+    case "link-add": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      if (!sub) die('usage: plm link-add <url> [--title "…"]');
+      const r = await api(`/projects/${link.project}/links`, {
+        method: "POST",
+        body: JSON.stringify({ url: sub, title: flag("title") ?? null }),
+      });
+      if (!r.ok) die(r.error ?? "could not add the link");
+      console.log(`✓ link ${sub}`);
+      break;
+    }
+    case "secrets": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      const r = await api<
+        { id: string; key: string; description: string | null; vault_ref: string; vault_field: string }[]
+      >(`/projects/${link.project}/secrets`);
+      if (!r.ok || !r.data) die(r.error ?? "could not fetch secrets");
+      for (const sec of r.data)
+        console.log(`${sec.key}  →  ${sec.vault_ref} · ${sec.vault_field}${sec.description ? `  (${sec.description})` : ""}`);
+      break;
+    }
+    case "secret": {
+      // a POINTER into the vault — the value never travels through plm
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      const ref = flag("vault");
+      if (!sub || !ref) die('usage: plm secret <KEY> --vault "<vault item name>" [--field <k>] [--desc "…"]');
+      const r = await api(`/projects/${link.project}/secrets`, {
+        method: "POST",
+        body: JSON.stringify({
+          key: sub,
+          vault_ref: ref,
+          vault_field: flag("field") ?? sub,
+          description: flag("desc") ?? null,
+        }),
+      });
+      if (!r.ok) die(r.error ?? "could not register the secret pointer");
+      console.log(`✓ secret ${sub} → ${ref}`);
+      break;
+    }
+    case "secret-rm": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      if (!sub) die("usage: plm secret-rm <KEY>");
+      const list = await api<{ id: string; key: string }[]>(`/projects/${link.project}/secrets`);
+      if (!list.ok || !list.data) die(list.error ?? "could not fetch secrets");
+      const hit = list.data.find((x) => x.key === sub);
+      if (!hit) die(`no secret pointer named ${sub}`);
+      const r = await api(`/projects/${link.project}/secrets/${hit.id}`, { method: "DELETE" });
+      if (!r.ok) die(r.error ?? "could not remove");
+      console.log(`✓ removed pointer ${sub}`);
       break;
     }
     case "sync": {
