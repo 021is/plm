@@ -69,6 +69,8 @@ const HELP = `plm — git for your product model · push it to PLMHub
   plm db push --url <DATABASE_URL>         introspect a live Postgres → push the ER model
   plm db push --json <file|->              push a model an agent/LLM built (no DB)
   plm db schema                            print the ER-model JSON contract
+  plm units push --json <f|-> [--replace]  push the unit contract (files, symbols, docs, access, tested)
+  plm units schema                         print the unit-contract JSON shape
   plm work <problem-id>                    start a problem: branch prob/<id> + tracked
   plm commit -m "…" [--for <problem-id>]   git commit + report who/branch/problem to the hub
   plm done [--solution "…"]                mark the active problem solved
@@ -102,6 +104,51 @@ Offline-first: .plmhub/ is a directory (like .git). Hub writes that can't be
 delivered land in .plmhub/queue/ and flush on the next online command. Git
 commands always work. PLMHub never connects to your code or database — plm
 pushes only the model. Coming next: plm mcp.`;
+
+const UNITS_SCHEMA = `plm units push — the unit contract (v2). One JSON document per app:
+{
+  "app": "api",                  // app name in the hub (or --app / the link)
+  "replace": true,               // remove units of this app missing from the push
+  "units": [
+    {
+      "name": "auth",            // the module/feature this unit is
+      "kind": "service",         // your vocabulary: service|router|entity|dto|mapper|usecase|…
+      "language": "python",
+      "source_path": "src/app/features/auth",
+      "surface": {
+        "files": [
+          {
+            "path": "src/app/features/auth/service.py",
+            "kind": "service",   // what the FILE is in your architecture
+            "doc": "Business logic for sign-in. Services always return DTOs.",
+            "access": { "roles": ["*"], "scopes": [], "memberships": [] },
+            "symbols": [
+              { "kind": "method", "name": "sign_up",
+                "doc": "Creates the user, hashes the password, returns UserDto.",
+                "input": "SignUpRequest", "output": "UserDto",
+                "access": { "roles": ["anonymous"], "scopes": [], "memberships": [] },
+                "tested": true, "cached": false, "secured": false },
+              { "kind": "endpoint", "name": "POST /auth/sign-up",
+                "doc": "Public sign-up door.", "http": "POST /auth/sign-up",
+                "access": { "roles": ["anonymous"] }, "tested": false, "secured": false },
+              { "kind": "entity", "name": "User",
+                "doc": "The immutable account row.",
+                "fields": [ { "name": "id", "type": "str", "nullable": false, "doc": "PK" } ] },
+              { "kind": "dto", "name": "UserDto", "fields": [ … ] },
+              { "kind": "mapper", "name": "user_to_dto",
+                "doc": "Entity → DTO. Never leaks password_hash.",
+                "input": "User", "output": "UserDto", "tested": true }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
+Per symbol: doc (what it does — documented := doc non-empty), access (who may call:
+roles/scopes/memberships; method-level wins over file-level), tested, cached, secured,
+input/output, http (endpoints), fields (entities/dtos). Push the whole app with
+--replace after re-deriving from source; the hub mirrors your code exactly.`;
 
 async function syncBranches(link: { project: string; app?: string }): Promise<boolean> {
   // local heads + remote-tracking refs → one inventory, merged by branch name
@@ -362,7 +409,7 @@ async function main(): Promise<void> {
       for (const d of list) {
         const who = d.author_name ?? d.author_email ?? "unknown";
         const when = d.created_at.slice(0, 10);
-        console.log(`${d.id}  ${when}  ${who}  — ${d.title}${(d as { status?: string }).status === "superseded" ? "  [superseded]" : ""}${d.comments ? `  [${d.comments} comments]` : ""}`);
+        console.log(`${d.id}  ${when}  ${who}  — ${d.title}${(d as { status?: string }).status && (d as { status?: string }).status !== "active" ? `  [${(d as { status?: string }).status}]` : ""}${d.comments ? `  [${d.comments} comments]` : ""}`);
         if (d.body) {
           for (const line of d.body.split("\n")) console.log(`    ${line}`);
         }
@@ -459,6 +506,29 @@ async function main(): Promise<void> {
       const r = await api(path, { method: "POST", body: JSON.stringify({ body: text }) });
       if (!r.ok) die(r.error ?? "could not comment (offline?)");
       console.log(`✓ commented on ${sub}`);
+      break;
+    }
+    case "units": {
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      if (sub === "schema") {
+        console.log(UNITS_SCHEMA);
+        break;
+      }
+      if (sub !== "push") die("usage: plm units push --json <file|-> [--app <name>] [--replace]   ·   plm units schema");
+      const src = flag("json");
+      if (!src) die("usage: plm units push --json <file|-> [--app <name>] [--replace]");
+      const raw = src === "-" ? readFileSync(0, "utf8") : readFileSync(src, "utf8");
+      const payload = JSON.parse(raw) as { app?: string; units?: unknown[]; replace?: boolean };
+      payload.app = flag("app") ?? payload.app ?? link.app;
+      if (!payload.app) die("no app: pass --app, set it in the JSON, or link with --app");
+      if (flags.replace) payload.replace = true;
+      const r = await api<{ pushed: number }>(`/projects/${link.project}/units/push`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) die(r.error ?? "could not push units");
+      console.log(`✓ pushed ${payload.units?.length ?? 0} units to app ${payload.app}${payload.replace ? " (replace)" : ""}`);
       break;
     }
     case "repos": {
