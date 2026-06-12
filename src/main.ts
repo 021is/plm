@@ -508,6 +508,10 @@ async function main(): Promise<void> {
         { id: string; key: string; description: string | null; vault_ref: string; vault_field: string }[]
       >(`/projects/${link.project}/secrets`);
       if (!r.ok || !r.data) die(r.error ?? "could not fetch secrets");
+      const proj = await api<{ secrets_instructions?: string }>(`/projects/${link.project}`);
+      if (proj.ok && proj.data?.secrets_instructions) {
+        console.log(`HOW TO FETCH:\n${proj.data.secrets_instructions}\n`);
+      }
       for (const sec of r.data)
         console.log(`${sec.key}  →  ${sec.vault_ref} · ${sec.vault_field}${sec.description ? `  (${sec.description})` : ""}`);
       break;
