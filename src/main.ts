@@ -1,8 +1,22 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { api, apiOrQueue, flushQueue } from "./api.ts";
 import { cachePath, apiUrl, loadConfig, loadLink, loadState, queuedEvents, saveConfig, saveLink, saveState } from "./config.ts";
+import { dirExists, headSha, MANIFEST, readManifest, scaffold, shortKey, validate, withDigests, type Manifest } from "./graph.ts";
 import { introspect, type Schema } from "./introspect.ts";
+
+type GraphView = {
+  rev: number; stale: boolean; commits_behind: number; truncated: boolean;
+  dangling_edges: number; weld_coverage: { matched: number; total: number };
+  nodes: { node_key: string; kind: string; name: string; digest: string; source_path?: string; props?: Record<string, unknown> }[];
+  edges: { from_key: string; to_key: string; kind: string; origin: string }[];
+};
+type NodeDetail = {
+  node: { node_key: string; kind: string; name: string; source_path?: string; props?: Record<string, unknown> };
+  edges_in: { from_key: string; to_key: string; kind: string; origin: string }[];
+  edges_out: { from_key: string; to_key: string; kind: string; origin: string }[];
+};
 
 const argv = process.argv.slice(2);
 const positionals: string[] = [];
@@ -60,6 +74,54 @@ Rules: one entry per table/entity; "fk" = the referenced table name (or null);
 "pk" marks primary keys; "relations" mirror the FKs (from → to). Read it from the
 repo's migrations / ORM models / a schema.sql — whatever's there. No DB connection needed.`;
 
+// The Code Map contract an agent emits to .plm/graph.json, then `plm graph push`.
+const GRAPH_CONTRACT = `The PLMHub Code Map — emit this per-repo JSON to .plm/graph.json, then:
+  plm graph validate   # truth-check it (tested? source exists?) before pushing
+  plm graph push       # send it; binds to your HEAD commit (staleness)
+
+{
+  "version": 1,
+  "app": "web",                     // the app this manifest covers (one repo)
+  "surface": "frontend-web",        // backend | frontend-web | android | ios
+  "nodes": [
+    { "node_key": "myproj:web:component:SignInCard", "kind": "component", "name": "SignInCard",
+      "source_path": "components/SignInCard.tsx", "span": [12,140],
+      "props": { "uses_hooks": ["myproj:web:hook:useSignIn"] } },
+    { "node_key": "myproj:web:api-client:postOtp", "kind": "api-client", "name": "postOtp",
+      "source_path": "lib/sdk.ts",
+      "props": { "targets": [ { "method": "POST", "path": "/api/v1/auth/otp" } ] } }
+  ],
+  "edges": [
+    { "from": "myproj:web:component:SignInCard", "to": "myproj:web:api-client:postOtp", "kind": "calls" }
+  ]
+}
+
+KIND vocab by surface (open — unknown kinds warn, never reject):
+  backend:      entity dto mapper service repo usecase endpoint method
+  frontend-web: route page component hook store api-client
+  android/ios:  view/activity fragment viewmodel repository usecase api-client
+EDGE kinds: contains (nesting — drives zoom/LOD) · calls · persists · reads · writes ·
+  implements · depends-on · maps · returns · uses
+
+NODE KEYS are stable + globally unique: project:app:kind:name. Keep them stable across
+pushes — they are how cross-repo edges resolve.
+
+ANNOTATIONS (props) — and each MUST be grounded in real source (no guessing):
+  method:    { tested: bool,    // true ONLY if a test file references the symbol
+               cached: bool, db: { reads:[entity], writes:[entity] },
+               authz: { mode:"direct"|"endpoint-gated", roles:[], scopes:[], memberships:[] } }
+  endpoint:  { http:{method,path}, public: bool,
+               authz:{roles,scopes,memberships}, rate_limited: bool, rate_config:{limit,window,key} }
+  api-client:{ targets: [ {method, path} ] }   // THE cross-repo seam: PLMHub auto-welds
+               // each target to the backend endpoint of the same normalized method+path.
+
+DEPTH (LOD): 0=app, 1=unit/module, 2+=symbols. The map renders depth<=1 by default;
+deeper nodes lazy-load on click. Omit it and it is defaulted from kind.
+
+DOCTRINE: you (the agent) are the parser — read the repo and emit this. Never claim an
+annotation you cannot see in the source; \`plm graph validate\` fails a lying graph.
+Bootstrap a skeleton with \`plm graph scaffold --app <name>\`, then enrich it.`;
+
 const HELP = `plm — git for your product model · push it to PLMHub
 
   plm login --token <ck_…> [--api <url>]   store your PLMHub API key (0600)
@@ -71,6 +133,14 @@ const HELP = `plm — git for your product model · push it to PLMHub
   plm db schema                            print the ER-model JSON contract
   plm units push --json <f|-> [--replace]  push the unit contract (files, symbols, docs, access, tested)
   plm units schema                         print the unit-contract JSON shape
+  plm graph schema                         print the Code Map JSON contract (for an agent to fill)
+  plm graph scaffold --app <name>          deterministic skeleton → .plm/graph.json (then enrich)
+  plm graph validate [--json <f>]          truth-check the manifest (tested?/source?); non-zero on fatal
+  plm graph push [--app <n>] [--replace]   validate + push .plm/graph.json (binds to HEAD commit)
+  plm graph pull [--depth N] [--expand k]  fetch the map (rev, staleness, weld coverage)
+  plm graph diff                           local manifest vs the pushed graph (added/removed/changed)
+  plm graph node|method|endpoint <key>     one node + its edges + annotations
+  plm graph watch [--app <n>]              auto-push on .plm/graph.json change (live follow-along)
   plm work <problem-id>                    start a problem: branch prob/<id> + tracked
   plm commit -m "…" [--for <problem-id>]   git commit + report who/branch/problem to the hub
   plm done [--solution "…"]                mark the active problem solved
@@ -290,6 +360,175 @@ async function main(): Promise<void> {
           : `✓ pushed the ER model to PLMHub → ${link.project}`,
       );
       break;
+    }
+    case "graph": {
+      if (sub === "schema") {
+        console.log(GRAPH_CONTRACT);
+        break;
+      }
+      if (sub === "scaffold") {
+        const app = flag("app") ?? loadLink()?.app ?? positionals[2];
+        if (!app) die("usage: plm graph scaffold --app <name>");
+        const m = scaffold(app, flag("surface") ?? "backend");
+        const out = flag("out") ?? MANIFEST;
+        mkdirSync(dirname(out), { recursive: true });
+        writeFileSync(out, `${JSON.stringify(m, null, 2)}\n`);
+        console.log(
+          `✓ scaffolded ${m.nodes.length} nodes → ${out}\n` +
+            "  next: have an agent enrich it with symbols + annotations, then: plm graph validate && plm graph push",
+        );
+        break;
+      }
+      if (sub === "validate") {
+        const jarg =
+          typeof flags.json === "string" ? flags.json : flags.json === true ? "-" : undefined;
+        const stdin = jarg === "-" ? await readStdin() : undefined;
+        let m: Manifest;
+        try {
+          m = readManifest(jarg, stdin);
+        } catch (e) {
+          return die((e as Error).message);
+        }
+        const { errors, warnings } = validate(m, jarg !== "-");
+        for (const w of warnings) console.error(`  warn: ${w}`);
+        for (const e of errors) console.error(`  ERROR: ${e}`);
+        if (errors.length) die(`${errors.length} fatal error(s) — fix before push`);
+        console.log(
+          `✓ valid: ${m.nodes.length} nodes, ${m.edges.length} edges${warnings.length ? `, ${warnings.length} warning(s)` : ""}`,
+        );
+        break;
+      }
+
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+
+      if (sub === "push") {
+        const jarg =
+          typeof flags.json === "string" ? flags.json : flags.json === true ? "-" : undefined;
+        const stdin = jarg === "-" ? await readStdin() : undefined;
+        let m: Manifest;
+        try {
+          m = withDigests(readManifest(jarg, stdin));
+        } catch (e) {
+          return die((e as Error).message);
+        }
+        const sha = flag("source-sha") ?? m.source_sha ?? headSha();
+        const { errors, warnings } = validate(m, jarg !== "-");
+        for (const w of warnings) console.error(`  warn: ${w}`);
+        if (errors.length) {
+          for (const e of errors) console.error(`  ERROR: ${e}`);
+          die(`${errors.length} fatal error(s) — fix before push`);
+        }
+        const res = await apiOrQueue(`/projects/${link.project}/graph/push`, {
+          app: flag("app") ?? m.app ?? link.app,
+          surface: m.surface ?? "backend",
+          source_sha: sha,
+          generated_by: m.generated_by ?? "plm",
+          nodes: m.nodes,
+          edges: m.edges,
+          replace: Boolean(flags.replace),
+        });
+        if (!res.ok) die(res.error ?? "push failed");
+        console.log(
+          res.queued
+            ? "✓ offline — queued (delivers on the next online command)"
+            : `✓ pushed graph: ${m.nodes.length} nodes, ${m.edges.length} edges → ${link.project}${sha ? ` @ ${sha.slice(0, 7)}` : ""}`,
+        );
+        break;
+      }
+
+      if (sub === "pull") {
+        const params = new URLSearchParams({ depth: flag("depth") ?? "1" });
+        if (flag("expand")) params.set("expand", flag("expand") as string);
+        if (flag("app")) params.set("app", flag("app") as string);
+        const r = await api<GraphView>(`/projects/${link.project}/graph?${params}`);
+        if (!r.ok || !r.data) die(r.error ?? "pull failed");
+        const g = r.data;
+        writeFileSync(cachePath("graph.json"), `${JSON.stringify(g, null, 2)}\n`);
+        console.log(
+          `graph rev ${g.rev}${g.stale ? ` · ⚠ STALE (${g.commits_behind} commits behind)` : ""}: ` +
+            `${g.nodes.length} nodes, ${g.edges.length} edges · weld ${g.weld_coverage.matched}/${g.weld_coverage.total}` +
+            `${g.dangling_edges ? ` · ${g.dangling_edges} dangling seams` : ""}${g.truncated ? " · (capped — expand for more)" : ""}`,
+        );
+        break;
+      }
+
+      if (sub === "diff") {
+        let m: Manifest;
+        try {
+          m = withDigests(readManifest());
+        } catch (e) {
+          return die((e as Error).message);
+        }
+        const r = await api<GraphView>(`/projects/${link.project}/graph?depth=99`);
+        if (!r.ok || !r.data) die(r.error ?? "diff failed");
+        const server = new Map(r.data.nodes.map((n) => [n.node_key, n.digest]));
+        const local = new Map(m.nodes.map((n) => [n.node_key, n.digest ?? ""]));
+        const added = [...local.keys()].filter((k) => !server.has(k));
+        const removed = [...server.keys()].filter((k) => !local.has(k));
+        const changed = [...local.keys()].filter((k) => server.has(k) && server.get(k) !== local.get(k));
+        console.log(
+          `diff vs rev ${r.data.rev}: +${added.length} added · -${removed.length} removed · ~${changed.length} changed`,
+        );
+        for (const k of added.slice(0, 8)) console.log(`  + ${k}`);
+        for (const k of removed.slice(0, 8)) console.log(`  - ${k}`);
+        for (const k of changed.slice(0, 8)) console.log(`  ~ ${k}`);
+        break;
+      }
+
+      if (sub === "node" || sub === "method" || sub === "endpoint") {
+        const key = positionals[2];
+        if (!key) die(`usage: plm graph ${sub} <node-key>`);
+        const r = await api<NodeDetail>(
+          `/projects/${link.project}/graph/node?key=${encodeURIComponent(key)}`,
+        );
+        if (!r.ok || !r.data) die(r.error ?? "node not found");
+        const { node, edges_in, edges_out } = r.data;
+        console.log(`${node.kind}  ${node.name}  [${node.node_key}]`);
+        if (node.source_path) console.log(`  source: ${node.source_path}`);
+        if (node.props && Object.keys(node.props).length) console.log(`  ${JSON.stringify(node.props)}`);
+        if (edges_out.length)
+          console.log(
+            `  → ${edges_out.map((e) => `${e.kind} ${shortKey(e.to_key)}${e.origin === "synthesized" ? "*" : ""}`).join(", ")}`,
+          );
+        if (edges_in.length)
+          console.log(`  ← ${edges_in.map((e) => `${e.kind} ${shortKey(e.from_key)}`).join(", ")}`);
+        break;
+      }
+
+      if (sub === "watch") {
+        const target = existsSync(MANIFEST) ? MANIFEST : dirExists(".plm/graph") ? ".plm/graph" : MANIFEST;
+        console.log(`watching ${target} — graph push on change (Ctrl-C to stop)`);
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const doPush = async (): Promise<void> => {
+          try {
+            const m = withDigests(readManifest());
+            const res = await apiOrQueue(`/projects/${link.project}/graph/push`, {
+              app: flag("app") ?? m.app ?? link.app,
+              surface: m.surface ?? "backend",
+              source_sha: headSha(),
+              generated_by: "plm graph watch",
+              nodes: m.nodes,
+              edges: m.edges,
+              replace: true,
+            });
+            console.log(
+              res.ok ? `  ↑ pushed ${m.nodes.length} nodes` : `  push failed: ${res.error}`,
+            );
+          } catch (e) {
+            console.error(`  ${(e as Error).message}`);
+          }
+        };
+        watch(target, { recursive: target === ".plm/graph" }, () => {
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(doPush, 800);
+        });
+        await doPush();
+        await new Promise(() => undefined); // run until Ctrl-C
+        break;
+      }
+
+      die("usage: plm graph <schema|scaffold|validate|push|pull|diff|node|method|endpoint|watch>");
     }
     case "work": {
       if (!sub) die("usage: plm work <problem-id>");
