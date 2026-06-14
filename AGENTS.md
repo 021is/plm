@@ -49,6 +49,16 @@ bun run src/main.ts <cmd>      # dev
 bun run build                  # dist/plm.js (node target, for npm)
 ```
 
+## Code Map (`plm graph`)
+`plm graph` extracts a repo into PLMHub's Code Map (`src/graph.ts` + the `graph`
+case in main.ts). The LLM is the parser (doctrine): an agent emits `.plm/graph.json`
+per the contract (`plm graph schema`); `plm graph validate` runs framework-agnostic
+TRUTH checks (a `tested:true` with no test FAILS) so a lying graph never reaches the
+hub; `plm graph push` binds it to HEAD (staleness) and the server synthesizes the
+cross-repo weld; `plm graph watch` auto-pushes on manifest change (live follow-along).
+Verbs: schema·scaffold·validate·push·pull·diff·node·method·endpoint·watch. Full
+doctrine + discovery-per-surface: the `plm-graph` skill (axon/skills/plm-graph.md).
+
 ## NOT done yet
-- `plm services push` / `plm roles push` / `plm push` (everything).
 - npm publish + `api.plmhub.eu` public endpoint (CLI currently points at the dev API).
+- Code Map: per-module manifest split + a deterministic `scaffold` beyond the dir tree.
