@@ -581,6 +581,34 @@ async function main(): Promise<void> {
         const v = flag(n);
         return v === undefined ? undefined : Number(v);
       };
+      // the full style surface from flags (shared by add + set) — every element is
+      // as customizable via plm as via the inspector: border style/radius, bg + text
+      // color, typography, opacity/angle, gradient.
+      const style = (): Record<string, unknown> => ({
+        fill: flag("fill"),
+        stroke: flag("stroke"),
+        strokeWidth: num("stroke-width"),
+        backgroundColor: flag("bg"),
+        borderStyle: flag("border"),
+        radius: num("radius"),
+        opacity: num("opacity"),
+        angle: num("angle"),
+        fontSize: num("font"),
+        fontFamily: flag("font-family"),
+        fontWeight: flag("weight"),
+        fontStyle: flags.italic === true ? "italic" : undefined,
+        underline: flags.underline === true ? true : undefined,
+        textAlign: flag("align"),
+        gradient: flag("gradient")
+          ? {
+              type: flag("gradient-type") ?? "linear",
+              stops: (flag("gradient") as string).split(",").map((c, i, a) => ({
+                offset: a.length > 1 ? i / (a.length - 1) : 0,
+                color: c.trim(),
+              })),
+            }
+          : undefined,
+      });
       const send = async <T>(path: string, init?: RequestInit): Promise<T> => {
         const r = await api<T>(`/projects/${proj}${path}`, init);
         if (!r.ok || r.data === undefined) die(r.error ?? "request failed");
@@ -659,11 +687,10 @@ async function main(): Promise<void> {
         }
         case "add": {
           const role = flag("role");
-          if (!role) die("usage: plm doodle add <id> --role <text|box|button|input|card|ellipse|line|image> [--x --y --w --h --text --fill --stroke --font --src]");
+          if (!role) die("usage: plm doodle add <id> --role <text|box|button|input|card|ellipse|line|image> [--x --y --w --h --text --src · style: --fill --stroke --stroke-width --bg --border <solid|dashed|dotted|dashdot> --radius --font --font-family --weight --italic --underline --align --opacity --angle --gradient \"#a,#b\"]");
           await runOps([{
             op: "add", role, x: num("x"), y: num("y"), w: num("w"), h: num("h"),
-            text: flag("text"), fill: flag("fill"), stroke: flag("stroke"),
-            fontSize: num("font"), src: flag("src") ?? flag("url"),
+            text: flag("text"), src: flag("src") ?? flag("url"), ...style(),
           }]);
           break;
         }
@@ -685,8 +712,7 @@ async function main(): Promise<void> {
         case "set":
           await runOps([{
             op: "update", id: needEl(), x: num("x"), y: num("y"), w: num("w"), h: num("h"),
-            fill: flag("fill"), stroke: flag("stroke"), text: flag("text"),
-            fontSize: num("font"), opacity: num("opacity"), angle: num("angle"),
+            text: flag("text"), ...style(),
           }]);
           break;
         case "rm":
