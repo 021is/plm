@@ -145,6 +145,8 @@ A doodle is a Fabric.js scene (id minted \`doodle_\`); elements are addressed by
   plm doodle set   <id> <el> [--x --y --w --h --fill --stroke --text --font --opacity --angle]
   plm doodle rm    <id> <el>                            delete an element
   plm doodle layer <id> <el> --front|--back|--forward|--backward    z-order
+  plm doodle group <id> <el> <el> [...] [--name <n>]   nest elements (Figma-style); prints grp_… id
+  plm doodle ungroup <id> --group <grp-id> | <el> [...]  flatten a group / detach elements
 
   plm doodle bg    <id> --color <#hex> | --image <url|dataURL>      background
   plm doodle board <id> --w 1280 --h 720               working-field size
@@ -753,6 +755,26 @@ async function main(): Promise<void> {
           await runOps([{ op: "reorder", id: eid, to }]);
           break;
         }
+        case "group": {
+          if (!id) die("usage: plm doodle group <doodle-id> <element-id> <element-id> [...] [--name <name>]");
+          const ids = positionals.slice(3);
+          if (ids.length < 2) die("group needs at least 2 element ids");
+          // runOps prints the new group id (grp_…) on stdout so an agent can capture it
+          await runOps([{ op: "group", ids, name: flag("name") }]);
+          break;
+        }
+        case "ungroup": {
+          if (!id) die("usage: plm doodle ungroup <doodle-id> --group <grp-id> | <element-id> [...]");
+          const gid = flag("group") ?? flag("groupId");
+          if (gid) {
+            await runOps([{ op: "ungroup", group: gid }]);
+          } else {
+            const ids = positionals.slice(3);
+            if (!ids.length) die("usage: plm doodle ungroup <doodle-id> --group <grp-id> | <element-id> [...]");
+            await runOps([{ op: "ungroup", ids }]);
+          }
+          break;
+        }
         case "bg": {
           const img = flag("image") ?? flag("url") ?? flag("src");
           if (flag("color")) await runOps([{ op: "bg", color: flag("color") }]);
@@ -800,7 +822,7 @@ async function main(): Promise<void> {
           break;
         }
         default:
-          die("usage: plm doodle <new|ls|show|pull|push|add|text|draw|comment|image|move|copy|set|name|lock|hide|rm|layer|bg|board|clear|undo|redo|watch>");
+          die("usage: plm doodle <new|ls|show|pull|push|add|text|draw|comment|image|move|copy|set|name|lock|hide|rm|layer|group|ungroup|bg|board|clear|undo|redo|watch>");
       }
       break;
     }
