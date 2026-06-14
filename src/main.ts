@@ -122,6 +122,39 @@ DOCTRINE: you (the agent) are the parser — read the repo and emit this. Never 
 annotation you cannot see in the source; \`plm graph validate\` fails a lying graph.
 Bootstrap a skeleton with \`plm graph scaffold --app <name>\`, then enrich it.`;
 
+// The doodle op contract — everything the editor toolbar does, over plm. The API
+// (not plm) owns all scene logic; plm just POSTs these. Each verb bumps the rev so
+// a watching editor follows along live.
+const DOODLE_CONTRACT = `plm doodle — drive a doodle the way the editor toolbar does, over the API.
+A doodle is a Fabric.js scene (id minted \`doodle_\`); elements are addressed by id (\`el_…\`).
+
+  plm doodle new [--name N --w 1280 --h 720]      create an empty doodle → prints its id
+  plm doodle ls                                   your doodles (⚠ stale = agent edited, not yet rendered)
+  plm doodle show <id>                            elements + comments (the agent view, with ids)
+  plm doodle pull <id>                            raw Fabric scene JSON (for editing + push)
+  plm doodle push <id> --json <file|->            replace the whole scene (raw primitive)
+
+  plm doodle add <id> --role <role> [geometry/style]   add an element → prints the new el id
+       roles: text box button input card ellipse line image
+       geometry: --x --y --w --h    style: --fill --stroke --font --text --src
+  plm doodle text <id> --text "…" [--x --y --font]     shortcut for --role text
+  plm doodle draw <id> --path "M 0 0 L 100 80" [--stroke #hex --width 3]   freehand pen path
+  plm doodle comment <id> --text "…" [--x --y]         sticky-note comment
+
+  plm doodle move  <id> <el> [--x --y | --dx --dy]     reposition (absolute or relative)
+  plm doodle set   <id> <el> [--x --y --w --h --fill --stroke --text --font --opacity --angle]
+  plm doodle rm    <id> <el>                            delete an element
+  plm doodle layer <id> <el> --front|--back|--forward|--backward    z-order
+
+  plm doodle bg    <id> --color <#hex> | --image <url|dataURL>      background
+  plm doodle board <id> --w 1280 --h 720               working-field size
+  plm doodle clear <id>                                remove all elements
+  plm doodle undo  <id>   ·   plm doodle redo <id>     server-side history
+  plm doodle watch <id>                                live rev signals (an agent following a human)
+
+Doctrine: the API is the contract; plm is a thin client. The scene is the source of
+truth — an agent edits without a browser, and any open editor re-renders live.`;
+
 const HELP = `plm — git for your product model · push it to PLMHub
 
   plm login --token <ck_…> [--api <url>]   store your PLMHub API key (0600)
@@ -529,6 +562,194 @@ async function main(): Promise<void> {
       }
 
       die("usage: plm graph <schema|scaffold|validate|push|pull|diff|node|method|endpoint|watch>");
+    }
+    case "doodle": {
+      // Thin client over the doodle ops API — EVERYTHING the editor toolbar does,
+      // over HTTP. No scene logic here; the API (doodle.py) owns it. Each mutating
+      // verb is one POST that bumps the rev so a watching editor follows along live.
+      const link = loadLink();
+      if (!link) die("not linked. run: plm link <project-slug>");
+      const proj = link.project;
+      const id = positionals[2];
+      const el = positionals[3];
+      type DoodleState = {
+        id: string; rev: number; count: number; preview_stale: boolean; noop?: boolean;
+        elements: unknown[]; comments: unknown[]; can_undo: boolean; can_redo: boolean;
+        created?: string[]; w?: number; h?: number;
+      };
+      const num = (n: string): number | undefined => {
+        const v = flag(n);
+        return v === undefined ? undefined : Number(v);
+      };
+      const send = async <T>(path: string, init?: RequestInit): Promise<T> => {
+        const r = await api<T>(`/projects/${proj}${path}`, init);
+        if (!r.ok || r.data === undefined) die(r.error ?? "request failed");
+        return r.data;
+      };
+      const runOps = async (list: unknown[]): Promise<DoodleState> => {
+        if (!id) die(`usage: plm doodle ${sub} <doodle-id> …`);
+        const d = await send<DoodleState>(`/playground/doodle/${id}/ops`, {
+          method: "POST",
+          body: JSON.stringify({ ops: list }),
+        });
+        // status → stderr (human chatter), created element ids → stdout (so an agent
+        // can capture them: EL=$(plm doodle add … --role box))
+        console.error(`✓ rev ${d.rev} · ${d.count} element(s)${d.preview_stale ? " · preview stale (open it to render)" : ""}`);
+        for (const cid of d.created ?? []) console.log(cid);
+        return d;
+      };
+      const needEl = (): string => {
+        if (!id || !el) die(`usage: plm doodle ${sub} <doodle-id> <element-id> …`);
+        return el;
+      };
+
+      switch (sub) {
+        case undefined:
+        case "help":
+          console.log(DOODLE_CONTRACT);
+          break;
+        case "new": {
+          const d = await send<{ id: string }>("/playground/doodle/new", {
+            method: "POST",
+            body: JSON.stringify({ name: flag("name"), w: num("w"), h: num("h") }),
+          });
+          console.log(d.id);
+          break;
+        }
+        case "ls": {
+          const files = await send<{ id: string; name: string; kind: string; elements: number | null; preview_stale: boolean }[]>(
+            "/playground",
+            { method: "GET" },
+          );
+          const list = files.filter((f) => f.kind === "doodle");
+          if (!list.length) {
+            console.log("(no doodles yet — plm doodle new)");
+            break;
+          }
+          for (const f of list)
+            console.log(`${f.id}  ${String(f.elements ?? 0).padStart(3)} els  ${f.preview_stale ? "⚠ stale" : "  ok  "}  ${f.name}`);
+          break;
+        }
+        case "show": {
+          if (!id) die("usage: plm doodle show <doodle-id>");
+          const d = await send<Record<string, unknown>>(`/files/${id}/scene`, { method: "GET" });
+          console.log(JSON.stringify({ rev: d.rev, w: d.w, h: d.h, elements: d.elements, comments: d.comments }, null, 2));
+          break;
+        }
+        case "pull": {
+          if (!id) die("usage: plm doodle pull <doodle-id>   # raw Fabric scene JSON");
+          const d = await send<Record<string, unknown>>(`/files/${id}/scene`, { method: "GET" });
+          delete d.comments;
+          delete d.elements;
+          delete d.rev;
+          console.log(JSON.stringify(d, null, 2));
+          break;
+        }
+        case "push": {
+          if (!id) die("usage: plm doodle push <doodle-id> --json <file|->");
+          const jarg = typeof flags.json === "string" ? flags.json : flags.json === true ? "-" : undefined;
+          if (!jarg) die("usage: plm doodle push <doodle-id> --json <file|->");
+          const raw = jarg === "-" ? await readStdin() : readFileSync(jarg, "utf8");
+          const d = await send<DoodleState>(`/playground/doodle/${id}/scene`, {
+            method: "POST",
+            body: JSON.stringify({ scene: JSON.parse(raw) }),
+          });
+          console.log(`✓ pushed · rev ${d.rev} · ${d.count} element(s)`);
+          break;
+        }
+        case "add": {
+          const role = flag("role");
+          if (!role) die("usage: plm doodle add <id> --role <text|box|button|input|card|ellipse|line|image> [--x --y --w --h --text --fill --stroke --font --src]");
+          await runOps([{
+            op: "add", role, x: num("x"), y: num("y"), w: num("w"), h: num("h"),
+            text: flag("text"), fill: flag("fill"), stroke: flag("stroke"),
+            fontSize: num("font"), src: flag("src") ?? flag("url"),
+          }]);
+          break;
+        }
+        case "text":
+          await runOps([{ op: "add", role: "text", text: flag("text") ?? "Text", x: num("x"), y: num("y"), w: num("w"), fill: flag("fill"), fontSize: num("font") }]);
+          break;
+        case "draw": {
+          const path = flag("path");
+          if (!path) die('usage: plm doodle draw <id> --path "M 0 0 L 100 80" [--stroke #hex --width 3]');
+          await runOps([{ op: "draw", path, stroke: flag("stroke"), strokeWidth: num("width") }]);
+          break;
+        }
+        case "comment":
+          await runOps([{ op: "comment", text: flag("text") ?? "Comment", x: num("x"), y: num("y") }]);
+          break;
+        case "move":
+          await runOps([{ op: "move", id: needEl(), x: num("x"), y: num("y"), dx: num("dx"), dy: num("dy") }]);
+          break;
+        case "set":
+          await runOps([{
+            op: "update", id: needEl(), x: num("x"), y: num("y"), w: num("w"), h: num("h"),
+            fill: flag("fill"), stroke: flag("stroke"), text: flag("text"),
+            fontSize: num("font"), opacity: num("opacity"), angle: num("angle"),
+          }]);
+          break;
+        case "rm":
+        case "delete":
+          await runOps([{ op: "delete", id: needEl() }]);
+          break;
+        case "layer": {
+          const eid = needEl();
+          const to = flags.front ? "front" : flags.back ? "back" : flags.forward ? "forward" : flags.backward ? "backward" : undefined;
+          if (!to) die("usage: plm doodle layer <id> <element-id> --front|--back|--forward|--backward");
+          await runOps([{ op: "reorder", id: eid, to }]);
+          break;
+        }
+        case "bg": {
+          const img = flag("image") ?? flag("url") ?? flag("src");
+          if (flag("color")) await runOps([{ op: "bg", color: flag("color") }]);
+          else if (img) await runOps([{ op: "bg", src: img }]);
+          else die("usage: plm doodle bg <id> --color <#hex> | --image <url|dataURL>");
+          break;
+        }
+        case "board":
+          await runOps([{ op: "board", w: num("w"), h: num("h") }]);
+          break;
+        case "clear":
+          await runOps([{ op: "clear" }]);
+          break;
+        case "undo":
+        case "redo": {
+          if (!id) die(`usage: plm doodle ${sub} <doodle-id>`);
+          const d = await send<DoodleState>(`/playground/doodle/${id}/${sub}`, { method: "POST", body: "{}" });
+          console.log(d.noop ? `(nothing to ${sub})` : `✓ ${sub} · rev ${d.rev} · ${d.count} element(s)`);
+          break;
+        }
+        case "watch": {
+          if (!id) die("usage: plm doodle watch <doodle-id>   # live rev signals (Ctrl-C to stop)");
+          const t = loadConfig().token ?? process.env.PLMHUB_TOKEN;
+          const res = await fetch(`${apiUrl()}/projects/${proj}/playground/doodle/${id}/stream`, {
+            headers: { ...(t ? { Authorization: `Bearer ${t}` } : {}) },
+          });
+          if (!res.ok || !res.body) die(`watch failed: HTTP ${res.status}`);
+          console.error(`watching ${id} — Ctrl-C to stop`);
+          const reader = res.body.getReader();
+          const dec = new TextDecoder();
+          let buf = "";
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            let i = buf.indexOf("\n\n");
+            while (i >= 0) {
+              const evt = buf.slice(0, i);
+              buf = buf.slice(i + 2);
+              const data = evt.split("\n").find((l) => l.startsWith("data:"))?.slice(5).trim();
+              if (data && data !== "{}") console.log(data);
+              i = buf.indexOf("\n\n");
+            }
+          }
+          break;
+        }
+        default:
+          die("usage: plm doodle <new|ls|show|pull|push|add|text|draw|comment|move|set|rm|layer|bg|board|clear|undo|redo|watch>");
+      }
+      break;
     }
     case "work": {
       if (!sub) die("usage: plm work <problem-id>");

@@ -25,6 +25,7 @@
 - `plm link <project-slug> [--app <name>] [--db <id>]` → `.plmhub/config.json`
 - `plm db push --url <DATABASE_URL> | --json <file|->` · `plm db schema`
 - `plm queue [--flush]` → inspect/deliver the offline outbox
+- `plm doodle <verb>` → drive a doodle the way the editor toolbar does (see below)
 - `plm <any git command>` → spawnSync git, same args/stdio/exit code
 - PLANNED (designs locked 2026-06-11): `plm work <problem-id>` (branch + tell hub who/where),
   `plm commit -m` (git commit + PLM: trailer + async hub event), `plm done [--solution]`,
@@ -59,6 +60,22 @@ cross-repo weld; `plm graph watch` auto-pushes on manifest change (live follow-a
 Verbs: schema·scaffold·validate·push·pull·diff·node·method·endpoint·watch. Full
 doctrine + discovery-per-surface: the `plm-graph` skill (axon/skills/plm-graph.md).
 
+## Doodle (`plm doodle`)
+Everything the doodle editor's toolbar does, over the API — so an agent edits a
+doodle and a human watching the editor sees it change live (the editor subscribes to
+the doodle SSE and re-pulls on each rev). **plm is a thin client: ZERO scene logic
+here** — every verb is one HTTP call; the API (`plmhub-api/features/projects/doodle.py`)
+owns scene mutation, Fabric synthesis, undo/redo, and the live broker. Doctrine match:
+dumb push primitive + the API is the contract (like `db push` / `graph push`).
+Verbs: `new · ls · show · pull · push --json · add --role · text · draw --path ·
+comment · move · set · rm · layer · bg · board · clear · undo · redo · watch`.
+Elements are addressed by id (`el_…`); `plm doodle add` prints the new id on stdout
+(status → stderr) so an agent can capture it. `plm doodle help` prints the full
+contract (`DOODLE_CONTRACT` in `main.ts`). The case uses `api()` directly (not the
+offline queue — ops need the synchronous response/ids).
+
 ## NOT done yet
 - npm publish + `api.plmhub.eu` public endpoint (CLI currently points at the dev API).
 - Code Map: per-module manifest split + a deterministic `scaffold` beyond the dir tree.
+- Doodle: a `plm doodle mcp`-style channel (or fold into `plm mcp`) so agents reach the
+  ops as MCP tools (prob_4965). The HTTP substrate is here; only the MCP wrapper is TODO.
