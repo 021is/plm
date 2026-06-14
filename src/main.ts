@@ -599,6 +599,7 @@ async function main(): Promise<void> {
         fontStyle: flags.italic === true ? "italic" : undefined,
         underline: flags.underline === true ? true : undefined,
         textAlign: flag("align"),
+        padding: num("padding"),
         gradient: flag("gradient")
           ? {
               type: flag("gradient-type") ?? "linear",
