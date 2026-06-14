@@ -727,6 +727,20 @@ async function main(): Promise<void> {
         case "hide":
           await runOps([{ op: "update", id: needEl(), visible: flags.off === true }]);
           break;
+        case "copy":
+        case "dup":
+        case "paste":
+          // copy/paste = duplicate an element (offset). cut+paste = use `move`.
+          await runOps([{ op: "duplicate", id: needEl(), dx: num("dx"), dy: num("dy") }]);
+          break;
+        case "image": {
+          // place an image element from a URL or a data URL (buffer/blob paste)
+          if (!id) die("usage: plm doodle image <id> --url <url> | --data <dataURL> [--x --y --w --h]");
+          const src = flag("url") ?? flag("data") ?? flag("src");
+          if (!src) die("plm doodle image needs --url <url> or --data <dataURL>");
+          await runOps([{ op: "add", role: "image", src, x: num("x"), y: num("y"), w: num("w"), h: num("h") }]);
+          break;
+        }
         case "rm":
         case "delete":
           await runOps([{ op: "delete", id: needEl() }]);
@@ -785,7 +799,7 @@ async function main(): Promise<void> {
           break;
         }
         default:
-          die("usage: plm doodle <new|ls|show|pull|push|add|text|draw|comment|move|set|name|lock|hide|rm|layer|bg|board|clear|undo|redo|watch>");
+          die("usage: plm doodle <new|ls|show|pull|push|add|text|draw|comment|image|move|copy|set|name|lock|hide|rm|layer|bg|board|clear|undo|redo|watch>");
       }
       break;
     }
