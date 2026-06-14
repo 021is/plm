@@ -712,8 +712,20 @@ async function main(): Promise<void> {
         case "set":
           await runOps([{
             op: "update", id: needEl(), x: num("x"), y: num("y"), w: num("w"), h: num("h"),
-            text: flag("text"), ...style(),
+            text: flag("text"), name: flag("name"),
+            visible: flags.show === true ? true : flags.hide === true ? false : undefined,
+            locked: flags.lock === true ? true : flags.unlock === true ? false : undefined,
+            ...style(),
           }]);
+          break;
+        case "name":
+          await runOps([{ op: "update", id: needEl(), name: positionals[4] ?? flag("name") ?? "" }]);
+          break;
+        case "lock":
+          await runOps([{ op: "update", id: needEl(), locked: flags.off !== true }]);
+          break;
+        case "hide":
+          await runOps([{ op: "update", id: needEl(), visible: flags.off === true }]);
           break;
         case "rm":
         case "delete":
@@ -773,7 +785,7 @@ async function main(): Promise<void> {
           break;
         }
         default:
-          die("usage: plm doodle <new|ls|show|pull|push|add|text|draw|comment|move|set|rm|layer|bg|board|clear|undo|redo|watch>");
+          die("usage: plm doodle <new|ls|show|pull|push|add|text|draw|comment|move|set|name|lock|hide|rm|layer|bg|board|clear|undo|redo|watch>");
       }
       break;
     }
