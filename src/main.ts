@@ -161,6 +161,8 @@ A doodle is a Fabric.js scene (id minted \`doodle_\`); elements are addressed by
   in flex mode the API lays them out + hugs content (a watching editor follows live):
   plm doodle frame  <id> [--x --y --w --h] [--mode flex --direction row|col --justify start|center|end|between --align start|center|end|stretch --gap <n> --padding <n> --wrap]   new frame → prints el_… id
   plm doodle layout <id> <frame> --mode block|flex [--direction --justify --align --gap --padding --wrap|--no-wrap]   set a frame's auto-layout
+       frame's own size (Figma): --w-mode hug|fixed --h-mode hug|fixed [--frame-w <px> --frame-h <px>]   (fixed gives fill children slack)
+  plm doodle size <id> <el> --w fixed|hug|fill --h fixed|hug|fill [--min-w --max-w --min-h --max-h]   per-child sizing inside an auto-layout frame
   plm doodle nest   <id> <frame> <el> [...]   ·   nest --detach <el> [...]   (re)parent / detach elements
   plm doodle wrap   <id> <el> <el> [...] [--direction --justify --align --gap --padding]   wrap selection in a NEW flex frame → prints el_… id
   plm doodle unwrap <id> <frame>   dissolve a frame (detach its children, keep them) — symmetric with wrap
@@ -255,7 +257,7 @@ const COMMAND_GROUPS: {
     help: "plm doodle help",
     verbs: [
       "new", "use", "rename", "ls", "show", "pull", "push", "add", "text", "draw", "comment",
-      "svg", "image", "frame", "layout", "nest", "wrap", "unwrap", "move", "copy", "set", "name",
+      "svg", "image", "frame", "layout", "size", "nest", "wrap", "unwrap", "move", "copy", "set", "name",
       "lock", "hide", "rm", "layer", "group", "ungroup", "present", "bg", "board", "clear",
       "undo", "redo", "watch",
     ],
@@ -943,6 +945,20 @@ async function main(): Promise<void> {
         gap: num("gap"),
         padding: num("padding"),
         wrap: flags.wrap === true ? true : flags["no-wrap"] === true ? false : undefined,
+        // the frame's own sizing (hug|fixed per axis) + fixed px (--frame-w/-h)
+        wMode: flag("w-mode"),
+        hMode: flag("h-mode"),
+        w: num("frame-w"),
+        h: num("frame-h"),
+      });
+      // per-child sizing (Figma Fixed/Hug/Fill + min/max); --no-min-w clears
+      const sizeFlags = (): Record<string, unknown> => ({
+        w: flag("w"),
+        h: flag("h"),
+        minW: flags["no-min-w"] === true ? null : num("min-w"),
+        maxW: flags["no-max-w"] === true ? null : num("max-w"),
+        minH: flags["no-min-h"] === true ? null : num("min-h"),
+        maxH: flags["no-max-h"] === true ? null : num("max-h"),
       });
       const send = async <T>(path: string, init?: RequestInit): Promise<T> => {
         const r = await api<T>(`/projects/${proj}${path}`, init);
@@ -1186,6 +1202,15 @@ async function main(): Promise<void> {
           await runOps([{ op: "layout", id: eid, ...lf }]);
           break;
         }
+        case "size": {
+          // per-child sizing inside an auto-layout frame (Figma Fixed/Hug/Fill)
+          const eid = needEl();
+          const sf = sizeFlags();
+          if (!Object.values(sf).some((v) => v !== undefined))
+            die("usage: plm doodle size <doodle-id> <element-id> [--w fixed|hug|fill --h fixed|hug|fill --min-w <n> --max-w <n> --min-h <n> --max-h <n>]");
+          await runOps([{ op: "size", id: eid, ...sf }]);
+          break;
+        }
         case "nest":
         case "reparent": {
           // parent elements under a frame, or --detach them. The frame must be the
@@ -1338,7 +1363,7 @@ async function main(): Promise<void> {
           break;
         }
         default:
-          die("usage: plm doodle <new|use|rename|ls|show|pull|push|add|text|draw|comment|image|svg|frame|layout|nest|wrap|unwrap|move|copy|set|name|lock|hide|rm|layer|group|ungroup|present|bg|board|clear|undo|redo|watch>");
+          die("usage: plm doodle <new|use|rename|ls|show|pull|push|add|text|draw|comment|image|svg|frame|layout|size|nest|wrap|unwrap|move|copy|set|name|lock|hide|rm|layer|group|ungroup|present|bg|board|clear|undo|redo|watch>");
       }
       break;
     }
