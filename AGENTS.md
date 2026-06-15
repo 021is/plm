@@ -71,8 +71,14 @@ Verbs: `new · ls · show · pull · push --json · add --role · text · draw -
 comment · move · set · rm · layer · bg · board · clear · undo · redo · watch`.
 Elements are addressed by id (`el_…`); `plm doodle add` prints the new id on stdout
 (status → stderr) so an agent can capture it. `plm doodle help` prints the full
-contract (`DOODLE_CONTRACT` in `main.ts`). The case uses `api()` directly (not the
-offline queue — ops need the synchronous response/ids).
+contract (`DOODLE_CONTRACT` in `main.ts`). **Offline-first (like git):** plm mints
+element ids CLIENT-SIDE (`genId` → `el_<24hex>`/`grp_`), so `add`/`draw`/`comment`/
+`group`/`duplicate` return a usable id with NO server round-trip; `runOps` POSTs when
+online and `enqueue`s to `.plmhub/queue/` when offline (flush oldest-first via
+`plm queue --flush`). The API honors the provided id (idempotent on flush). Reads
+(`show`/`pull`/`ls`), `new`, and `present` still need the server. **Active doodle:**
+`new`/`use` store `activeDoodle` in `.plmhub/state.json` so verbs omit the id (an
+explicit `doodle_…` first arg overrides).
 
 ## NOT done yet
 - npm publish + `api.plmhub.eu` public endpoint (CLI currently points at the dev API).

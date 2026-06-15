@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { api, apiOrQueue, flushQueue } from "./api.ts";
-import { cachePath, apiUrl, loadConfig, loadLink, loadState, queuedEvents, saveConfig, saveLink, saveState } from "./config.ts";
+import { api, apiOrQueue, flushQueue, isOffline } from "./api.ts";
+import { cachePath, apiUrl, enqueue, loadConfig, loadLink, loadState, queuedEvents, saveConfig, saveLink, saveState } from "./config.ts";
 import { dirExists, headSha, MANIFEST, readManifest, scaffold, shortKey, validate, withDigests, type Manifest } from "./graph.ts";
 import { introspect, type Schema } from "./introspect.ts";
 
@@ -655,17 +655,50 @@ async function main(): Promise<void> {
       // agents under one token show up as separate, moving cursors.
       const asName = flag("as");
       const asQs = asName ? `?as=${encodeURIComponent(asName)}` : "";
+      // mint element ids CLIENT-SIDE so create ops (add/draw/comment/group) return
+      // an id with no server round-trip → `add` works OFFLINE and the queued op is
+      // idempotent on flush (the API honors the provided id). Matches `el_<24hex>`.
+      const genId = (prefix: string): string =>
+        `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
       const runOps = async (list: unknown[]): Promise<DoodleState> => {
         if (!id) die(`usage: plm doodle ${sub} <doodle-id> …`);
-        const d = await send<DoodleState>(`/playground/doodle/${id}/ops${asQs}`, {
+        const created: string[] = [];
+        for (const raw of list) {
+          const op = raw as Record<string, unknown>;
+          if ((op.op === "add" || op.op === "draw" || op.op === "comment") && !op.id) {
+            op.id = genId("el");
+            created.push(op.id as string);
+          }
+          if (op.op === "group" && !op.groupId) {
+            op.groupId = genId("grp");
+            created.push(op.groupId as string);
+          }
+          if (op.op === "duplicate" && !op.newId) {
+            op.newId = genId("el");
+            created.push(op.newId as string);
+          }
+        }
+        const path = `/playground/doodle/${id}/ops${asQs}`;
+        const r = await api<DoodleState>(`/projects/${proj}${path}`, {
           method: "POST",
           body: JSON.stringify({ ops: list }),
         });
-        // status → stderr (human chatter), created element ids → stdout (so an agent
-        // can capture them: EL=$(plm doodle add … --role box))
-        console.error(`✓ rev ${d.rev} · ${d.count} element(s)${d.preview_stale ? " · preview stale (open it to render)" : ""}`);
-        for (const cid of d.created ?? []) console.log(cid);
-        return d;
+        if (r.ok && r.data) {
+          // status → stderr (human chatter), created ids → stdout (an agent captures them)
+          console.error(`✓ rev ${r.data.rev} · ${r.data.count} element(s)${r.data.preview_stale ? " · preview stale (open it to render)" : ""}`);
+          for (const cid of created) console.log(cid);
+          return r.data;
+        }
+        if (isOffline(r.error)) {
+          // queue it like git — flushes oldest-first on the next online command.
+          // We already minted the ids, so `add` still prints a usable id offline.
+          enqueue({ path: `/projects/${proj}${path}`, method: "POST", body: { ops: list }, createdAt: new Date().toISOString() });
+          console.error(`⧗ offline — queued (${queuedEvents().length} pending; 'plm queue --flush' to deliver)`);
+          for (const cid of created) console.log(cid);
+          return { id, rev: -1, count: 0, preview_stale: true, elements: [], comments: [], can_undo: false, can_redo: false, created } as DoodleState;
+        }
+        die(r.error ?? "request failed");
+        throw new Error("unreachable");
       };
       const needEl = (): string => {
         if (!id || !el) die(`usage: plm doodle ${sub} <doodle-id> <element-id> …`);
