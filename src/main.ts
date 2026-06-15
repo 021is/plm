@@ -858,6 +858,11 @@ async function main(): Promise<void> {
           await runOps([{ op: "add", role: "image", src, x: num("x"), y: num("y"), w: num("w"), h: num("h") }]);
           break;
         }
+        case "frame": {
+          // create an auto-layout frame container (children parent via parentFrame)
+          await runOps([{ op: "add", role: "frame", x: num("x"), y: num("y"), w: num("w"), h: num("h") }]);
+          break;
+        }
         case "rm":
         case "delete":
           await runOps([{ op: "delete", id: needEl() }]);
