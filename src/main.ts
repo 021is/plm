@@ -197,7 +197,9 @@ const HELP = `plm — git for your product model · push it to PLMHub
   plm graph diff                           local manifest vs the pushed graph (added/removed/changed)
   plm graph node|method|endpoint <key>     one node + its edges + annotations
   plm graph watch [--app <n>]              auto-push on .plm/graph.json change (live follow-along)
-  plm doodle <verb>                        drive a doodle scene like the editor toolbar (plm doodle help)
+  plm doodle <verb>  (alias: ddl)          drive a doodle scene like the editor toolbar (plm doodle help)
+  plm html <verb>                          html playground files: new/ls/show/set/rename/rm (plm html help)
+  plm md <verb>    (alias: markdown)        markdown playground files: new/ls/show/set/rename/rm (plm md help)
   plm work <problem-id>                    start a problem: branch prob/<id> + tracked
   plm commit -m "…" [--for <problem-id>]   git commit + report who/branch/problem to the hub
   plm done [--solution "…"]                mark the active problem solved
@@ -311,6 +313,173 @@ async function syncBranches(link: { project: string; app?: string }): Promise<bo
     branches,
   });
   return !r.queued;
+}
+
+// ── playground text files (html / markdown) — the `plm html` / `plm md` command
+//    groups, mirroring `plm doodle`'s file-level verbs. A text artifact is a file
+//    (gzipped body in R2 + a metadata row); ids are self-describing (`html_`/`md_`).
+//    The API (POST /playground/textfile, GET /files/{id}/url) owns persistence. ──
+type Env<T> = { ok: boolean; data?: T; error?: string };
+
+/** multipart/form-data POST (the textfile endpoint takes Form fields, not JSON). */
+async function postForm<T>(path: string, fields: Record<string, string | undefined>): Promise<Env<T>> {
+  const fd = new FormData();
+  for (const [k, v] of Object.entries(fields)) if (v !== undefined) fd.append(k, v);
+  const t = loadConfig().token ?? process.env.PLMHUB_TOKEN;
+  try {
+    const res = await fetch(`${apiUrl()}${path}`, {
+      method: "POST",
+      headers: { ...(t ? { Authorization: `Bearer ${t}` } : {}) },
+      body: fd,
+    });
+    return (await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }))) as Env<T>;
+  } catch (e) {
+    return { ok: false, error: `cannot reach ${apiUrl()} (${(e as Error).message})` };
+  }
+}
+
+/** Resolve the body for new/set: --content "…" | --file <path|-> | --stdin. */
+async function readDocBody(): Promise<string | undefined> {
+  const c = flag("content");
+  if (c !== undefined) return c;
+  const farg = typeof flags.file === "string" ? flags.file : flags.file === true ? "-" : undefined;
+  if (farg) return farg === "-" ? await readStdin() : readFileSync(farg, "utf8");
+  if (flags.stdin === true) return await readStdin();
+  return undefined;
+}
+
+function textContract(kind: "html" | "markdown"): string {
+  const l = kind === "html" ? "html" : "md";
+  const p = kind === "html" ? "html_" : "md_";
+  return `plm ${l} — drive ${kind} playground files over the API (like \`plm doodle\` for text).
+A ${kind} file is a gzipped blob in R2 + a metadata row; its id is minted \`${p}…\`.
+
+  plm ${l} new [--name N] [--content "…" | --file <path|-> | --stdin]   create → prints its id, becomes active
+  plm ${l} use <${p}…>                              set the ACTIVE ${l} file (then omit the id below)
+  plm ${l} ls                                       your ${kind} files (id + name)
+  plm ${l} show [<${p}…>]                            print the file body (alias: pull / cat)
+  plm ${l} set  [<${p}…>] --content "…" | --file <path|-> | --stdin   replace the body (alias: push)
+  plm ${l} rename [<${p}…>] <new name>               rename the file
+  plm ${l} rm   <${p}…>                              delete the file (alias: delete)
+
+  Active file: after 'new'/'use', omit the id — verbs use the active ${l} file
+  (stored in .plmhub/state.json). An explicit ${p}… first arg always overrides it.`;
+}
+
+/** Shared handler for `plm html` and `plm md`/`plm markdown`. */
+async function textTool(kind: "html" | "markdown"): Promise<void> {
+  const link = loadLink();
+  if (!link) die("not linked. run: plm link <project-slug>");
+  const proj = link.project;
+  const verb = positionals[1];
+  const idPrefix = kind === "html" ? "html_" : "md_";
+  const fileKind = kind === "html" ? "html" : "markdown";
+  const label = kind === "html" ? "html" : "md";
+  const stateKey = kind === "html" ? "activeHtml" : "activeMd";
+  const args = positionals.slice(2);
+  const state = loadState();
+  const active = stateKey === "activeHtml" ? state.activeHtml : state.activeMd;
+  let id: string | undefined;
+  let rest: string[];
+  if (args[0]?.startsWith(idPrefix)) {
+    id = args[0];
+    rest = args.slice(1);
+  } else if (active) {
+    id = active;
+    rest = args;
+  } else {
+    id = args[0];
+    rest = args.slice(1);
+  }
+  const send = async <T>(path: string, init?: RequestInit): Promise<T> => {
+    const r = await api<T>(`/projects/${proj}${path}`, init);
+    if (!r.ok || r.data === undefined) die(r.error ?? "request failed");
+    return r.data;
+  };
+  const setActive = (fid: string) => saveState({ ...loadState(), [stateKey]: fid });
+
+  switch (verb) {
+    case undefined:
+    case "help":
+      console.log(textContract(kind));
+      break;
+    case "new": {
+      const body = (await readDocBody()) ?? "";
+      const r = await postForm<{ id: string }>(`/projects/${proj}/playground/textfile`, {
+        kind,
+        body,
+        name: flag("name"),
+      });
+      if (!r.ok || !r.data) die(r.error ?? "create failed");
+      setActive(r.data.id);
+      console.error(`✓ created ${label}${flag("name") ? ` "${flag("name")}"` : ""} · now active`);
+      console.log(r.data.id);
+      break;
+    }
+    case "use": {
+      if (!id) die(`usage: plm ${label} use <${idPrefix}…>`);
+      setActive(id);
+      console.error(`✓ active ${label}: ${id}`);
+      console.log(id);
+      break;
+    }
+    case "ls": {
+      const files = await send<{ id: string; name: string; kind: string }[]>("/playground", {
+        method: "GET",
+      });
+      const list = files.filter((f) => f.kind === fileKind);
+      if (!list.length) {
+        console.log(`(no ${label} files yet — plm ${label} new --name …)`);
+        break;
+      }
+      for (const f of list) console.log(`${f.id}  ${f.name}`);
+      break;
+    }
+    case "show":
+    case "pull":
+    case "cat": {
+      if (!id) die(`usage: plm ${label} show <${idPrefix}…>`);
+      const { url } = await send<{ url: string }>(`/files/${id}/url`, { method: "GET" });
+      const res = await fetch(url);
+      if (!res.ok) die(`fetch failed: HTTP ${res.status}`);
+      process.stdout.write(await res.text());
+      break;
+    }
+    case "set":
+    case "push": {
+      if (!id) die(`usage: plm ${label} set <${idPrefix}…> --content "…" | --file <path|-> | --stdin`);
+      const body = await readDocBody();
+      if (body === undefined)
+        die(`plm ${label} set needs --content "…", --file <path|->, or --stdin`);
+      const r = await postForm<{ id: string }>(`/projects/${proj}/playground/textfile`, {
+        kind,
+        body,
+        id,
+        name: flag("name"),
+      });
+      if (!r.ok || !r.data) die(r.error ?? "update failed");
+      console.error(`✓ saved ${id}`);
+      console.log(id);
+      break;
+    }
+    case "rename": {
+      if (!id) die(`usage: plm ${label} rename [<${idPrefix}…>] <new name>`);
+      const newName = (rest.join(" ").trim() || flag("name") || "").trim();
+      if (!newName) die(`usage: plm ${label} rename [<${idPrefix}…>] <new name>`);
+      await send(`/files/${id}`, { method: "PATCH", body: JSON.stringify({ name: newName }) });
+      console.error(`✓ renamed ${id} → ${newName}`);
+      break;
+    }
+    case "rm":
+    case "delete": {
+      if (!id) die(`usage: plm ${label} rm <${idPrefix}…>`);
+      await send(`/files/${id}`, { method: "DELETE" });
+      console.error(`✓ deleted ${id}`);
+      break;
+    }
+    default:
+      die(`usage: plm ${label} <new|use|ls|show|pull|set|push|rename|rm>   (plm ${label} help)`);
+  }
 }
 
 async function main(): Promise<void> {
@@ -587,6 +756,12 @@ async function main(): Promise<void> {
 
       die("usage: plm graph <schema|scaffold|validate|push|pull|diff|node|method|endpoint|watch>");
     }
+    case "html":
+    case "md":
+    case "markdown":
+      await textTool(cmd === "html" ? "html" : "markdown");
+      break;
+    case "ddl": // alias for `doodle`
     case "doodle": {
       // Thin client over the doodle ops API — EVERYTHING the editor toolbar does,
       // over HTTP. No scene logic here; the API (doodle.py) owns it. Each mutating

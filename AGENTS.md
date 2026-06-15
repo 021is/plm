@@ -25,7 +25,8 @@
 - `plm link <project-slug> [--app <name>] [--db <id>]` → `.plmhub/config.json`
 - `plm db push --url <DATABASE_URL> | --json <file|->` · `plm db schema`
 - `plm queue [--flush]` → inspect/deliver the offline outbox
-- `plm doodle <verb>` → drive a doodle the way the editor toolbar does (see below)
+- `plm doodle <verb>` (alias `ddl`) → drive a doodle the way the editor toolbar does (see below)
+- `plm html <verb>` · `plm md <verb>` (alias `markdown`) → playground text-file groups (see below)
 - `plm <any git command>` → spawnSync git, same args/stdio/exit code
 - PLANNED (designs locked 2026-06-11): `plm work <problem-id>` (branch + tell hub who/where),
   `plm commit -m` (git commit + PLM: trailer + async hub event), `plm done [--solution]`,
@@ -60,6 +61,19 @@ cross-repo weld; `plm graph watch` auto-pushes on manifest change (live follow-a
 Verbs: schema·scaffold·validate·push·pull·diff·node·method·endpoint·watch. Full
 doctrine + discovery-per-surface: the `plm-graph` skill (axon/skills/plm-graph.md).
 
+## Playground command groups (one namespace per file kind)
+The playground holds three editable artifact kinds; each gets its own `plm` command
+group, all thin clients over the same file/API substrate:
+- **`plm doodle`** (alias `ddl`) — Fabric scenes (ops engine; see below).
+- **`plm html`** — `text/html` files. Verbs: `new · use · ls · show|pull|cat · set|push ·
+  rename · rm`. Body via `--content "…"` / `--file <path|->` / `--stdin`.
+- **`plm md`** (alias `markdown`) — `text/markdown` files. Same verbs as `html`.
+
+html/md ids are self-describing (`html_…` / `md_…`); `new`/`use` store an active file
+in `.plmhub/state.json` (omit the id afterwards, like the active doodle). Backed by
+`POST /playground/textfile` (upsert) + `GET /files/{id}/url` (read the R2 body). Shared
+handler: `textTool(kind)` in `main.ts`; `plm html help` / `plm md help` print the contract.
+
 ## Doodle (`plm doodle`)
 Everything the doodle editor's toolbar does, over the API — so an agent edits a
 doodle and a human watching the editor sees it change live (the editor subscribes to
@@ -68,7 +82,12 @@ here** — every verb is one HTTP call; the API (`plmhub-api/features/projects/d
 owns scene mutation, Fabric synthesis, undo/redo, and the live broker. Doctrine match:
 dumb push primitive + the API is the contract (like `db push` / `graph push`).
 Verbs: `new · ls · show · pull · push --json · add --role · text · draw --path ·
-comment · move · set · rm · layer · bg · board · clear · undo · redo · watch`.
+comment · svg · move · set · rm · layer · group · ungroup · bg · board · clear ·
+undo · redo · present · watch` plus **auto-layout frames** (Figma): `frame` (create,
++ layout flags) · `layout <frame>` (set mode/direction/justify/align/gap/padding/wrap)
+· `nest <frame> <el>… | --detach <el>…` (re/de-parent) · `wrap <el>…` (wrap selection in
+a new flex frame). The API runs a server-side flex engine (hug + distribute) on every
+op batch, so a watching editor follows the layout live.
 Elements are addressed by id (`el_…`); `plm doodle add` prints the new id on stdout
 (status → stderr) so an agent can capture it. `plm doodle help` prints the full
 contract (`DOODLE_CONTRACT` in `main.ts`). **Offline-first (like git):** plm mints

@@ -34,6 +34,8 @@ export type WorkState = {
   branch?: string;
   startedAt?: string;
   activeDoodle?: string;
+  activeHtml?: string;
+  activeMd?: string;
 };
 export type QueuedEvent = { path: string; method: string; body: unknown; createdAt: string };
 
