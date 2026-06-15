@@ -163,9 +163,11 @@ A doodle is a Fabric.js scene (id minted \`doodle_\`); elements are addressed by
   plm doodle layout <id> <frame> --mode block|flex [--direction --justify --align --gap --padding --wrap|--no-wrap]   set a frame's auto-layout
   plm doodle nest   <id> <frame> <el> [...]   ·   nest --detach <el> [...]   (re)parent / detach elements
   plm doodle wrap   <id> <el> <el> [...] [--direction --justify --align --gap --padding]   wrap selection in a NEW flex frame → prints el_… id
+  plm doodle unwrap <id> <frame>   dissolve a frame (detach its children, keep them) — symmetric with wrap
 
   plm doodle bg    <id> --color <#hex> | --image <url|dataURL>      background
   plm doodle board <id> --w 1280 --h 720               working-field size
+       auto-grow height: --auto-h | --no-auto-h  [--min-h N --max-h N --padding N]  (server hugs content, persists)
   plm doodle clear <id>                                remove all elements
   plm doodle present <id> --x <n> --y <n> [--as <label>]   move your cursor (no scene change)
   plm doodle undo  <id>   ·   plm doodle redo <id>     server-side history
@@ -229,12 +231,90 @@ const HELP = `plm — git for your product model · push it to PLMHub
   plm sync                                 report local+remote branches to the hub
   plm map                                  the project map (ETag-cached, works offline)
   plm queue [--flush]                      show / deliver the offline outbox
+  plm commands [group]                     index of every command group + its verbs
   plm <any git command>                    passes straight through to git
 
 Offline-first: .plmhub/ is a directory (like .git). Hub writes that can't be
 delivered land in .plmhub/queue/ and flush on the next online command. Git
 commands always work. PLMHub never connects to your code or database — plm
 pushes only the model. Coming next: plm mcp.`;
+
+// the verb catalog per command group — the source of truth for `plm commands`.
+// Keep in lockstep with the switch cases below + each group's `help`.
+const COMMAND_GROUPS: {
+  group: string;
+  alias?: string;
+  desc: string;
+  help?: string;
+  verbs: string[];
+}[] = [
+  {
+    group: "doodle",
+    alias: "ddl",
+    desc: "Fabric scene editor — full toolbar parity",
+    help: "plm doodle help",
+    verbs: [
+      "new", "use", "rename", "ls", "show", "pull", "push", "add", "text", "draw", "comment",
+      "svg", "image", "frame", "layout", "nest", "wrap", "unwrap", "move", "copy", "set", "name",
+      "lock", "hide", "rm", "layer", "group", "ungroup", "present", "bg", "board", "clear",
+      "undo", "redo", "watch",
+    ],
+  },
+  {
+    group: "html",
+    desc: "HTML playground files",
+    help: "plm html help",
+    verbs: ["new", "use", "ls", "show", "pull", "set", "push", "rename", "rm"],
+  },
+  {
+    group: "md",
+    alias: "markdown",
+    desc: "Markdown playground files",
+    help: "plm md help",
+    verbs: ["new", "use", "ls", "show", "pull", "set", "push", "rename", "rm"],
+  },
+  {
+    group: "graph",
+    desc: "Code Map (the LLM is the parser)",
+    help: "plm graph schema",
+    verbs: ["schema", "scaffold", "validate", "push", "pull", "diff", "node", "method", "endpoint", "watch"],
+  },
+  {
+    group: "db",
+    desc: "ER model push/introspect",
+    verbs: ["push", "schema"],
+  },
+];
+
+function renderCommands(filter?: string): string {
+  const f = filter?.toLowerCase();
+  const groups = f
+    ? COMMAND_GROUPS.filter((g) => g.group === f || g.alias === f)
+    : COMMAND_GROUPS;
+  if (f && !groups.length) {
+    return `plm: no command group "${filter}". groups: ${COMMAND_GROUPS.map((g) => g.group).join(", ")}`;
+  }
+  const lines: string[] = ["plm — command groups\n"];
+  for (const g of groups) {
+    const head = `${g.group}${g.alias ? `  (alias: ${g.alias})` : ""}`;
+    lines.push(`${head}\n  ${g.desc}${g.help ? `  ·  ${g.help}` : ""}`);
+    // wrap the verb list at ~76 cols
+    let row = "    ";
+    for (const v of g.verbs) {
+      const piece = (row.trim() ? " · " : "") + v;
+      if ((row + piece).length > 80) {
+        lines.push(row);
+        row = "    " + v;
+      } else {
+        row += piece;
+      }
+    }
+    if (row.trim()) lines.push(row);
+    lines.push("");
+  }
+  if (!f) lines.push("project lifecycle (work·commit·decide·goal·problem·secret·task·note·…): plm help");
+  return lines.join("\n");
+}
 
 const UNITS_SCHEMA = `plm units push — the unit contract (v2). One JSON document per app:
 {
@@ -756,6 +836,10 @@ async function main(): Promise<void> {
 
       die("usage: plm graph <schema|scaffold|validate|push|pull|diff|node|method|endpoint|watch>");
     }
+    case "commands":
+    case "cmds":
+      console.log(renderCommands(positionals[1]));
+      break;
     case "html":
     case "md":
     case "markdown":
@@ -792,7 +876,7 @@ async function main(): Promise<void> {
       type DoodleState = {
         id: string; rev: number; count: number; preview_stale: boolean; noop?: boolean;
         elements: unknown[]; comments: unknown[]; can_undo: boolean; can_redo: boolean;
-        created?: string[]; w?: number; h?: number;
+        created?: string[]; w?: number; h?: number; board_w?: number; board_h?: number;
       };
       const num = (n: string): number | undefined => {
         const v = flag(n);
@@ -970,7 +1054,19 @@ async function main(): Promise<void> {
         case "show": {
           if (!id) die("usage: plm doodle show <doodle-id>");
           const d = await send<Record<string, unknown>>(`/files/${id}/scene`, { method: "GET" });
-          console.log(JSON.stringify({ rev: d.rev, w: d.w, h: d.h, elements: d.elements, comments: d.comments }, null, 2));
+          // board geometry + auto-height config (undefined keys drop out); elements include
+          // each frame's `layout` + every element's `parentFrame` for auto-layout introspection
+          console.log(
+            JSON.stringify(
+              {
+                rev: d.rev, w: d.w, h: d.h,
+                padding: d.padding, autoH: d.autoH, minH: d.minH, maxH: d.maxH,
+                elements: d.elements, comments: d.comments,
+              },
+              null,
+              2,
+            ),
+          );
           break;
         }
         case "pull": {
@@ -1110,6 +1206,12 @@ async function main(): Promise<void> {
           }
           break;
         }
+        case "unwrap": {
+          // dissolve a frame: detach its children (they stay) + delete the frame
+          const eid = needEl();
+          await runOps([{ op: "unwrap", id: eid }]);
+          break;
+        }
         case "wrap": {
           // Figma Shift+A: wrap elements in a NEW flex frame (sized to their bbox).
           // Prints the new frame id on stdout.
@@ -1167,8 +1269,11 @@ async function main(): Promise<void> {
           else die("usage: plm doodle bg <id> --color <#hex> | --image <url|dataURL>");
           break;
         }
-        case "board":
-          await runOps([
+        case "board": {
+          // resize the main board and/or drive auto-grow height. --auto-h turns
+          // auto-height ON (hugs content, clamped to --min-h/--max-h + --padding);
+          // --no-auto-h turns it OFF. The API recomputes + persists the height.
+          const bst = await runOps([
             {
               op: "board",
               w: num("w"),
@@ -1176,10 +1281,17 @@ async function main(): Promise<void> {
               padding: num("padding"),
               minH: num("min-h"),
               maxH: num("max-h"),
-              autoH: flags["auto-h"] === true ? true : flags["auto-h"] === false ? false : undefined,
+              autoH:
+                flags["auto-h"] === true
+                  ? true
+                  : flags["no-auto-h"] === true
+                    ? false
+                    : undefined,
             },
           ]);
+          if (bst.board_h) console.error(`✓ board ${bst.board_w ?? "?"}×${bst.board_h}`);
           break;
+        }
         case "clear":
           await runOps([{ op: "clear" }]);
           break;
@@ -1226,7 +1338,7 @@ async function main(): Promise<void> {
           break;
         }
         default:
-          die("usage: plm doodle <new|use|rename|ls|show|pull|push|add|text|draw|comment|image|svg|frame|layout|nest|wrap|move|copy|set|name|lock|hide|rm|layer|group|ungroup|present|bg|board|clear|undo|redo|watch>");
+          die("usage: plm doodle <new|use|rename|ls|show|pull|push|add|text|draw|comment|image|svg|frame|layout|nest|wrap|unwrap|move|copy|set|name|lock|hide|rm|layer|group|ungroup|present|bg|board|clear|undo|redo|watch>");
       }
       break;
     }

@@ -86,8 +86,12 @@ comment · svg · move · set · rm · layer · group · ungroup · bg · board 
 undo · redo · present · watch` plus **auto-layout frames** (Figma): `frame` (create,
 + layout flags) · `layout <frame>` (set mode/direction/justify/align/gap/padding/wrap)
 · `nest <frame> <el>… | --detach <el>…` (re/de-parent) · `wrap <el>…` (wrap selection in
-a new flex frame). The API runs a server-side flex engine (hug + distribute) on every
-op batch, so a watching editor follows the layout live.
+a new flex frame) · `unwrap <frame>` (dissolve, keep children). The API runs a server-side
+flex engine (hug + distribute) on every op batch, so a watching editor follows the layout
+live. **Auto-height:** `board --auto-h|--no-auto-h [--min-h --max-h --padding]` — the server
+recomputes + PERSISTS the board height to hug content (every viewer sees it grow, no reload).
+The editor's follow-mode (opt-in, click an agent's cursor/pill) eases the human's viewport
+to the agent — purely a viewer feature, no plm verb.
 Elements are addressed by id (`el_…`); `plm doodle add` prints the new id on stdout
 (status → stderr) so an agent can capture it. `plm doodle help` prints the full
 contract (`DOODLE_CONTRACT` in `main.ts`). **Offline-first (like git):** plm mints
