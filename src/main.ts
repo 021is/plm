@@ -480,6 +480,8 @@ async function textTool(kind: "html" | "markdown"): Promise<void> {
     return r.data;
   };
   const setActive = (fid: string) => saveState({ ...loadState(), [stateKey]: fid });
+  // --as <label> names the agent in the live-edit bar a watcher sees
+  const asQ = flag("as") ? `?as=${encodeURIComponent(flag("as") as string)}` : "";
 
   switch (verb) {
     case undefined:
@@ -488,7 +490,7 @@ async function textTool(kind: "html" | "markdown"): Promise<void> {
       break;
     case "new": {
       const body = (await readDocBody()) ?? "";
-      const r = await postForm<{ id: string }>(`/projects/${proj}/playground/textfile`, {
+      const r = await postForm<{ id: string }>(`/projects/${proj}/playground/textfile${asQ}`, {
         kind,
         body,
         name: flag("name"),
@@ -534,7 +536,7 @@ async function textTool(kind: "html" | "markdown"): Promise<void> {
       const body = await readDocBody();
       if (body === undefined)
         die(`plm ${label} set needs --content "…", --file <path|->, or --stdin`);
-      const r = await postForm<{ id: string }>(`/projects/${proj}/playground/textfile`, {
+      const r = await postForm<{ id: string }>(`/projects/${proj}/playground/textfile${asQ}`, {
         kind,
         body,
         id,
