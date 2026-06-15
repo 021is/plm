@@ -157,6 +157,13 @@ A doodle is a Fabric.js scene (id minted \`doodle_\`); elements are addressed by
   plm doodle group <id> <el> <el> [...] [--name <n>]   nest elements (Figma-style); prints grp_… id
   plm doodle ungroup <id> --group <grp-id> | <el> [...]  flatten a group / detach elements
 
+  auto-layout frame (Figma): a frame is a container; children carry parentFrame and
+  in flex mode the API lays them out + hugs content (a watching editor follows live):
+  plm doodle frame  <id> [--x --y --w --h] [--mode flex --direction row|col --justify start|center|end|between --align start|center|end|stretch --gap <n> --padding <n> --wrap]   new frame → prints el_… id
+  plm doodle layout <id> <frame> --mode block|flex [--direction --justify --align --gap --padding --wrap|--no-wrap]   set a frame's auto-layout
+  plm doodle nest   <id> <frame> <el> [...]   ·   nest --detach <el> [...]   (re)parent / detach elements
+  plm doodle wrap   <id> <el> <el> [...] [--direction --justify --align --gap --padding]   wrap selection in a NEW flex frame → prints el_… id
+
   plm doodle bg    <id> --color <#hex> | --image <url|dataURL>      background
   plm doodle board <id> --w 1280 --h 720               working-field size
   plm doodle clear <id>                                remove all elements
@@ -658,6 +665,26 @@ async function main(): Promise<void> {
             }
           : undefined,
       });
+      // auto-layout frame props from flags (shared by `frame`/`layout`/`wrap`).
+      // --direction accepts row|col (also horizontal/vertical, h/v). --wrap /
+      // --no-wrap toggle wrapping.
+      const normDir = (d: string | undefined): string | undefined =>
+        d === undefined
+          ? undefined
+          : ["row", "horizontal", "h"].includes(d)
+            ? "row"
+            : ["col", "column", "vertical", "v"].includes(d)
+              ? "col"
+              : d;
+      const layoutFlags = (): Record<string, unknown> => ({
+        mode: flag("mode"),
+        direction: normDir(flag("direction") ?? flag("dir")),
+        justify: flag("justify"),
+        align: flag("align"),
+        gap: num("gap"),
+        padding: num("padding"),
+        wrap: flags.wrap === true ? true : flags["no-wrap"] === true ? false : undefined,
+      });
       const send = async <T>(path: string, init?: RequestInit): Promise<T> => {
         const r = await api<T>(`/projects/${proj}${path}`, init);
         if (!r.ok || r.data === undefined) die(r.error ?? "request failed");
@@ -688,6 +715,10 @@ async function main(): Promise<void> {
           if (op.op === "duplicate" && !op.newId) {
             op.newId = genId("el");
             created.push(op.newId as string);
+          }
+          if (op.op === "wrap" && !op.frameId) {
+            op.frameId = genId("el");
+            created.push(op.frameId as string);
           }
         }
         const path = `/playground/doodle/${id}/ops${asQs}`;
@@ -859,8 +890,68 @@ async function main(): Promise<void> {
           break;
         }
         case "frame": {
-          // create an auto-layout frame container (children parent via parentFrame)
-          await runOps([{ op: "add", role: "frame", x: num("x"), y: num("y"), w: num("w"), h: num("h") }]);
+          // create an auto-layout frame container (children parent via parentFrame).
+          // Layout flags (--mode flex --direction --justify --align --gap --padding
+          // --wrap) set its auto-layout in the same call.
+          if (!id) die("usage: plm doodle frame <doodle-id> [--x --y --w --h] [--mode flex --direction row --justify center --align center --gap 24 --padding 16]");
+          const fid = genId("el");
+          const lf = layoutFlags();
+          const hasLayout = Object.values(lf).some((v) => v !== undefined);
+          const ops: unknown[] = [
+            { op: "add", role: "frame", id: fid, x: num("x"), y: num("y"), w: num("w"), h: num("h") },
+          ];
+          if (hasLayout) ops.push({ op: "layout", id: fid, ...lf });
+          await runOps(ops);
+          console.error(`✓ frame ${fid}${hasLayout ? ` · ${lf.mode ?? "block"}` : ""}`);
+          break;
+        }
+        case "layout": {
+          // set a frame's auto-layout props (Figma auto-layout). The API lays the
+          // children out + hugs content; a watching editor follows along live.
+          const eid = needEl();
+          const lf = layoutFlags();
+          if (!Object.values(lf).some((v) => v !== undefined))
+            die("usage: plm doodle layout <doodle-id> <frame-id> --mode block|flex [--direction row|col --justify start|center|end|between --align start|center|end|stretch --gap <n> --padding <n> --wrap|--no-wrap]");
+          await runOps([{ op: "layout", id: eid, ...lf }]);
+          break;
+        }
+        case "nest":
+        case "reparent": {
+          // parent elements under a frame, or --detach them. The frame must be the
+          // FIRST id (unless --detach); the rest are the children to nest.
+          if (!id) die("usage: plm doodle nest <doodle-id> <frame-id> <element-id> [...]   |   --detach <element-id> [...]");
+          if ("detach" in flags) {
+            // --detach may have swallowed the first id as its "value"; collect both
+            const ids = [
+              ...(typeof flags.detach === "string" ? [flags.detach] : []),
+              ...rest,
+            ];
+            if (!ids.length) die("plm doodle nest --detach needs element id(s)");
+            await runOps([{ op: "reparent", frame: null, ids }]);
+          } else {
+            const [frameId, ...kids] = rest;
+            if (!frameId || !kids.length) die("usage: plm doodle nest <doodle-id> <frame-id> <element-id> [...]");
+            await runOps([{ op: "reparent", frame: frameId, ids: kids }]);
+          }
+          break;
+        }
+        case "wrap": {
+          // Figma Shift+A: wrap elements in a NEW flex frame (sized to their bbox).
+          // Prints the new frame id on stdout.
+          if (!id) die("usage: plm doodle wrap <doodle-id> <element-id> <element-id> [...] [--direction --justify --align --gap --padding]");
+          if (rest.length < 1) die("wrap needs at least 1 element id");
+          const lf = layoutFlags();
+          await runOps([
+            {
+              op: "wrap",
+              ids: rest,
+              direction: lf.direction,
+              justify: lf.justify,
+              align: lf.align,
+              gap: lf.gap,
+              padding: lf.padding,
+            },
+          ]);
           break;
         }
         case "rm":
@@ -960,7 +1051,7 @@ async function main(): Promise<void> {
           break;
         }
         default:
-          die("usage: plm doodle <new|use|rename|ls|show|pull|push|add|text|draw|comment|image|svg|move|copy|set|name|lock|hide|rm|layer|group|ungroup|present|bg|board|clear|undo|redo|watch>");
+          die("usage: plm doodle <new|use|rename|ls|show|pull|push|add|text|draw|comment|image|svg|frame|layout|nest|wrap|move|copy|set|name|lock|hide|rm|layer|group|ungroup|present|bg|board|clear|undo|redo|watch>");
       }
       break;
     }
