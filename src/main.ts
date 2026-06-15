@@ -128,9 +128,11 @@ Bootstrap a skeleton with \`plm graph scaffold --app <name>\`, then enrich it.`;
 const DOODLE_CONTRACT = `plm doodle — drive a doodle the way the editor toolbar does, over the API.
 A doodle is a Fabric.js scene (id minted \`doodle_\`); elements are addressed by id (\`el_…\`).
 
-  plm doodle new [--name N --w 1280 --h 720]      create an empty doodle → prints its id
+  plm doodle new [--name N --w 1280 --h 720]      create an empty doodle → prints its id, becomes active
+  plm doodle use <id>                             set the ACTIVE doodle (then omit <id> on every verb below)
+  plm doodle rename [<id>] <new name>             rename the doodle file
   plm doodle ls                                   your doodles (⚠ stale = agent edited, not yet rendered)
-  plm doodle show <id>                            elements + comments (the agent view, with ids)
+  plm doodle show [<id>]                          elements + comments (the agent view, with ids)
   plm doodle pull <id>                            raw Fabric scene JSON (for editing + push)
   plm doodle push <id> --json <file|->            replace the whole scene (raw primitive)
 
@@ -138,8 +140,8 @@ A doodle is a Fabric.js scene (id minted \`doodle_\`); elements are addressed by
        roles: text box button input card ellipse line triangle diamond star image
        geometry: --x --y --w --h (x/y = element CENTRE; origin is centered)
        style: --fill --stroke --stroke-width --bg --border <solid|dashed|dotted|dashdot>
-              --radius --opacity --angle --gradient "#a,#b" --shadow <sm|md|lg|xl>
-       text:  --text "…" --font <px> --font-family <name> --weight bold --italic --underline --align <left|center|right>
+              --radius --opacity --angle --gradient "#a,#b" --shadow <none|soft|medium|hard>
+       text:  --text "…" --font <px> --font-family <name> --weight bold --italic --underline --strike --align <left|center|right>
   plm doodle text <id> --text "…" [--x --y --font --font-family --weight --italic --align]   shortcut for --role text
   plm doodle draw <id> --path "M 0 0 L 100 80" [--stroke #hex --width 3]   freehand pen path
   plm doodle comment <id> --text "…" [--x --y]         sticky-note comment
@@ -162,6 +164,8 @@ A doodle is a Fabric.js scene (id minted \`doodle_\`); elements are addressed by
   plm doodle watch <id>                                live rev signals (an agent following a human)
 
   Add --as <label> to ANY mutating verb to name + colour this agent's live cursor.
+  Active doodle: after 'new'/'use', omit <id> — verbs use the active doodle (stored in
+  .plmhub/state.json). An explicit doodle_… first arg always overrides it.
 
 Doctrine: the API is the contract; plm is a thin client. The scene is the source of
 truth — an agent edits without a browser, and any open editor re-renders live.`;
@@ -582,8 +586,26 @@ async function main(): Promise<void> {
       const link = loadLink();
       if (!link) die("not linked. run: plm link <project-slug>");
       const proj = link.project;
-      const id = positionals[2];
-      const el = positionals[3];
+      // Active-doodle context (.plmhub/state.json): `plm doodle use <id>` (or a
+      // fresh `new`) stores the active doodle so you can omit the id afterwards.
+      // Resolve: an explicit `doodle_…` first positional wins; otherwise fall back
+      // to the active doodle and treat the positionals as the verb's own args
+      // (element ids etc.). `rest` = the verb's positional args after the doodle.
+      const dArgs = positionals.slice(2);
+      const active = loadState().activeDoodle;
+      let id: string | undefined;
+      let rest: string[];
+      if (dArgs[0]?.startsWith("doodle_")) {
+        id = dArgs[0];
+        rest = dArgs.slice(1);
+      } else if (active) {
+        id = active;
+        rest = dArgs;
+      } else {
+        id = dArgs[0];
+        rest = dArgs.slice(1);
+      }
+      const el = rest[0];
       type DoodleState = {
         id: string; rev: number; count: number; preview_stale: boolean; noop?: boolean;
         elements: unknown[]; comments: unknown[]; can_undo: boolean; can_redo: boolean;
@@ -610,8 +632,10 @@ async function main(): Promise<void> {
         fontWeight: flag("weight"),
         fontStyle: flags.italic === true ? "italic" : undefined,
         underline: flags.underline === true ? true : undefined,
+        linethrough: flags.linethrough === true || flags.strike === true ? true : undefined,
         textAlign: flag("align"),
         padding: num("padding"),
+        shadow: flag("shadow"),
         gradient: flag("gradient")
           ? {
               type: flag("gradient-type") ?? "linear",
@@ -658,7 +682,24 @@ async function main(): Promise<void> {
             method: "POST",
             body: JSON.stringify({ name: flag("name"), w: num("w"), h: num("h") }),
           });
+          saveState({ ...loadState(), activeDoodle: d.id }); // becomes the active doodle
+          console.error(`✓ created${flag("name") ? ` "${flag("name")}"` : ""} · now active`);
           console.log(d.id);
+          break;
+        }
+        case "use": {
+          if (!id) die("usage: plm doodle use <doodle-id>   # make it the active doodle (omit the id afterwards)");
+          saveState({ ...loadState(), activeDoodle: id });
+          console.error(`✓ active doodle: ${id}`);
+          console.log(id);
+          break;
+        }
+        case "rename": {
+          if (!id) die("usage: plm doodle rename [<doodle-id>] <new name>");
+          const newName = (rest.join(" ").trim() || flag("name") || "").trim();
+          if (!newName) die("usage: plm doodle rename [<doodle-id>] <new name>");
+          await send(`/files/${id}`, { method: "PATCH", body: JSON.stringify({ name: newName }) });
+          console.error(`✓ renamed ${id} → ${newName}`);
           break;
         }
         case "ls": {
@@ -738,7 +779,7 @@ async function main(): Promise<void> {
           }]);
           break;
         case "name":
-          await runOps([{ op: "update", id: needEl(), name: positionals[4] ?? flag("name") ?? "" }]);
+          await runOps([{ op: "update", id: needEl(), name: rest[1] ?? flag("name") ?? "" }]);
           break;
         case "lock":
           await runOps([{ op: "update", id: needEl(), locked: flags.off !== true }]);
@@ -773,7 +814,7 @@ async function main(): Promise<void> {
         }
         case "group": {
           if (!id) die("usage: plm doodle group <doodle-id> <element-id> <element-id> [...] [--name <name>]");
-          const ids = positionals.slice(3);
+          const ids = rest;
           if (ids.length < 2) die("group needs at least 2 element ids");
           // runOps prints the new group id (grp_…) on stdout so an agent can capture it
           await runOps([{ op: "group", ids, name: flag("name") }]);
@@ -785,7 +826,7 @@ async function main(): Promise<void> {
           if (gid) {
             await runOps([{ op: "ungroup", group: gid }]);
           } else {
-            const ids = positionals.slice(3);
+            const ids = rest;
             if (!ids.length) die("usage: plm doodle ungroup <doodle-id> --group <grp-id> | <element-id> [...]");
             await runOps([{ op: "ungroup", ids }]);
           }
@@ -847,7 +888,7 @@ async function main(): Promise<void> {
           break;
         }
         default:
-          die("usage: plm doodle <new|ls|show|pull|push|add|text|draw|comment|image|move|copy|set|name|lock|hide|rm|layer|group|ungroup|present|bg|board|clear|undo|redo|watch>");
+          die("usage: plm doodle <new|use|rename|ls|show|pull|push|add|text|draw|comment|image|move|copy|set|name|lock|hide|rm|layer|group|ungroup|present|bg|board|clear|undo|redo|watch>");
       }
       break;
     }
