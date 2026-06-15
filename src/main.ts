@@ -635,7 +635,18 @@ async function main(): Promise<void> {
         linethrough: flags.linethrough === true || flags.strike === true ? true : undefined,
         textAlign: flag("align"),
         padding: num("padding"),
-        shadow: flag("shadow"),
+        // shadow: a preset name (none/soft/medium/hard) OR a custom shadow object
+        // when any --shadow-* prop is given (Figma-style control)
+        shadow: ((): unknown => {
+          const col = flag("shadow-color");
+          const bl = num("shadow-blur");
+          const sx = num("shadow-x");
+          const sy = num("shadow-y");
+          if (col || bl !== undefined || sx !== undefined || sy !== undefined) {
+            return { color: col ?? "rgba(0,0,0,0.3)", blur: bl ?? 8, offsetX: sx ?? 0, offsetY: sy ?? 4 };
+          }
+          return flag("shadow");
+        })(),
         gradient: flag("gradient")
           ? {
               type: flag("gradient-type") ?? "linear",
