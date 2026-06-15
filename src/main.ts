@@ -135,14 +135,20 @@ A doodle is a Fabric.js scene (id minted \`doodle_\`); elements are addressed by
   plm doodle push <id> --json <file|->            replace the whole scene (raw primitive)
 
   plm doodle add <id> --role <role> [geometry/style]   add an element → prints the new el id
-       roles: text box button input card ellipse line image
-       geometry: --x --y --w --h    style: --fill --stroke --font --text --src
-  plm doodle text <id> --text "…" [--x --y --font]     shortcut for --role text
+       roles: text box button input card ellipse line triangle diamond star image
+       geometry: --x --y --w --h (x/y = element CENTRE; origin is centered)
+       style: --fill --stroke --stroke-width --bg --border <solid|dashed|dotted|dashdot>
+              --radius --opacity --angle --gradient "#a,#b" --shadow <sm|md|lg|xl>
+       text:  --text "…" --font <px> --font-family <name> --weight bold --italic --underline --align <left|center|right>
+  plm doodle text <id> --text "…" [--x --y --font --font-family --weight --italic --align]   shortcut for --role text
   plm doodle draw <id> --path "M 0 0 L 100 80" [--stroke #hex --width 3]   freehand pen path
   plm doodle comment <id> --text "…" [--x --y]         sticky-note comment
 
   plm doodle move  <id> <el> [--x --y | --dx --dy]     reposition (absolute or relative)
-  plm doodle set   <id> <el> [--x --y --w --h --fill --stroke --text --font --opacity --angle]
+  plm doodle copy  <id> <el> [--dx --dy]   ·   plm doodle dup <id> <el>    duplicate (offset)
+  plm doodle image <id> --src <url|dataURL> [--x --y --w --h]   paste an image element
+  plm doodle name  <id> <el> <name>   ·   lock/hide <id> <el> [--off]      layer meta
+  plm doodle set   <id> <el> [any add style flag above]   restyle an existing element
   plm doodle rm    <id> <el>                            delete an element
   plm doodle layer <id> <el> --front|--back|--forward|--backward    z-order
   plm doodle group <id> <el> <el> [...] [--name <n>]   nest elements (Figma-style); prints grp_… id
@@ -179,6 +185,7 @@ const HELP = `plm — git for your product model · push it to PLMHub
   plm graph diff                           local manifest vs the pushed graph (added/removed/changed)
   plm graph node|method|endpoint <key>     one node + its edges + annotations
   plm graph watch [--app <n>]              auto-push on .plm/graph.json change (live follow-along)
+  plm doodle <verb>                        drive a doodle scene like the editor toolbar (plm doodle help)
   plm work <problem-id>                    start a problem: branch prob/<id> + tracked
   plm commit -m "…" [--for <problem-id>]   git commit + report who/branch/problem to the hub
   plm done [--solution "…"]                mark the active problem solved
@@ -705,7 +712,9 @@ async function main(): Promise<void> {
           break;
         }
         case "text":
-          await runOps([{ op: "add", role: "text", text: flag("text") ?? "Text", x: num("x"), y: num("y"), w: num("w"), fill: flag("fill"), fontSize: num("font") }]);
+          // shortcut for `add --role text` — forwards the full text style (font,
+          // font-family, weight, italic, underline, align, color, …) via style()
+          await runOps([{ op: "add", role: "text", text: flag("text") ?? "Text", x: num("x"), y: num("y"), w: num("w"), ...style() }]);
           break;
         case "draw": {
           const path = flag("path");
