@@ -152,6 +152,7 @@ A doodle is a Fabric.js scene (id minted \`doodle_\`); elements are addressed by
   plm doodle image <id> --src <url|dataURL> [--x --y --w --h]   paste an image element
   plm doodle name  <id> <el> <name>   ·   lock/hide <id> <el> [--off]      layer meta
   plm doodle set   <id> <el> [any add style flag above]   restyle an existing element
+  plm doodle label <id> <shape> --text "…" [--fill --font]   set a shape's centered bound label (empty removes)
   plm doodle rm    <id> <el>                            delete an element
   plm doodle layer <id> <el> --front|--back|--forward|--backward    z-order
   plm doodle group <id> <el> <el> [...] [--name <n>]   nest elements (Figma-style); prints grp_… id
@@ -1200,6 +1201,17 @@ async function main(): Promise<void> {
           if (!Object.values(lf).some((v) => v !== undefined))
             die("usage: plm doodle layout <doodle-id> <frame-id> --mode block|flex [--direction row|col --justify start|center|end|between --align start|center|end|stretch --gap <n> --padding <n> --wrap|--no-wrap]");
           await runOps([{ op: "layout", id: eid, ...lf }]);
+          break;
+        }
+        case "label": {
+          // set a shape's centered bound label (double-click-to-type, over the API)
+          const eid = needEl();
+          const text = flag("text");
+          if (text === undefined)
+            die('usage: plm doodle label <doodle-id> <shape-id> --text "…"   (empty text removes it)');
+          await runOps([
+            { op: "label", id: eid, text, labelId: genId("el"), fill: flag("fill"), fontSize: num("font") },
+          ]);
           break;
         }
         case "size": {
