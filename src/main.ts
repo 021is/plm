@@ -145,6 +145,7 @@ A doodle is a Fabric.js scene (id minted \`doodle_\`); elements are addressed by
   plm doodle text <id> --text "…" [--x --y --font --font-family --weight --italic --align]   shortcut for --role text
   plm doodle draw <id> --path "M 0 0 L 100 80" [--stroke #hex --width 3]   freehand pen path
   plm doodle comment <id> --text "…" [--x --y]         sticky-note comment
+  plm doodle svg   <id> --content "<svg>" | --file <path|->   paste SVG → scalable image
 
   plm doodle move  <id> <el> [--x --y | --dx --dy]     reposition (absolute or relative)
   plm doodle copy  <id> <el> [--dx --dy]   ·   plm doodle dup <id> <el>    duplicate (offset)
@@ -845,6 +846,18 @@ async function main(): Promise<void> {
           await runOps([{ op: "add", role: "image", src, x: num("x"), y: num("y"), w: num("w"), h: num("h") }]);
           break;
         }
+        case "svg": {
+          // paste raw SVG → inserted as a crisp SVG-data-URL image (parity with
+          // the editor's SVG tool)
+          if (!id) die('usage: plm doodle svg <id> --content "<svg>…" | --file <path|-> [--x --y --w --h]');
+          const farg = typeof flags.file === "string" ? flags.file : flags.file === true ? "-" : undefined;
+          let raw = flag("content") ?? flag("svg");
+          if (!raw && farg) raw = farg === "-" ? await readStdin() : readFileSync(farg, "utf8");
+          if (!raw?.trim()) die('plm doodle svg needs --content "<svg>" or --file <path|->');
+          const src = `data:image/svg+xml;utf8,${encodeURIComponent(raw.trim())}`;
+          await runOps([{ op: "add", role: "image", src, x: num("x"), y: num("y"), w: num("w"), h: num("h") }]);
+          break;
+        }
         case "rm":
         case "delete":
           await runOps([{ op: "delete", id: needEl() }]);
@@ -942,7 +955,7 @@ async function main(): Promise<void> {
           break;
         }
         default:
-          die("usage: plm doodle <new|use|rename|ls|show|pull|push|add|text|draw|comment|image|move|copy|set|name|lock|hide|rm|layer|group|ungroup|present|bg|board|clear|undo|redo|watch>");
+          die("usage: plm doodle <new|use|rename|ls|show|pull|push|add|text|draw|comment|image|svg|move|copy|set|name|lock|hide|rm|layer|group|ungroup|present|bg|board|clear|undo|redo|watch>");
       }
       break;
     }
