@@ -873,7 +873,17 @@ async function main(): Promise<void> {
           break;
         }
         case "board":
-          await runOps([{ op: "board", w: num("w"), h: num("h") }]);
+          await runOps([
+            {
+              op: "board",
+              w: num("w"),
+              h: num("h"),
+              padding: num("padding"),
+              minH: num("min-h"),
+              maxH: num("max-h"),
+              autoH: flags["auto-h"] === true ? true : flags["auto-h"] === false ? false : undefined,
+            },
+          ]);
           break;
         case "clear":
           await runOps([{ op: "clear" }]);
