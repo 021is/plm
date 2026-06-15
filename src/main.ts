@@ -151,8 +151,11 @@ A doodle is a Fabric.js scene (id minted \`doodle_\`); elements are addressed by
   plm doodle bg    <id> --color <#hex> | --image <url|dataURL>      background
   plm doodle board <id> --w 1280 --h 720               working-field size
   plm doodle clear <id>                                remove all elements
+  plm doodle present <id> --x <n> --y <n> [--as <label>]   move your cursor (no scene change)
   plm doodle undo  <id>   ·   plm doodle redo <id>     server-side history
   plm doodle watch <id>                                live rev signals (an agent following a human)
+
+  Add --as <label> to ANY mutating verb to name + colour this agent's live cursor.
 
 Doctrine: the API is the contract; plm is a thin client. The scene is the source of
 truth — an agent edits without a browser, and any open editor re-renders live.`;
@@ -617,9 +620,13 @@ async function main(): Promise<void> {
         if (!r.ok || r.data === undefined) die(r.error ?? "request failed");
         return r.data;
       };
+      // `--as <label>` names this agent's cursor (distinct colour) so several
+      // agents under one token show up as separate, moving cursors.
+      const asName = flag("as");
+      const asQs = asName ? `?as=${encodeURIComponent(asName)}` : "";
       const runOps = async (list: unknown[]): Promise<DoodleState> => {
         if (!id) die(`usage: plm doodle ${sub} <doodle-id> …`);
-        const d = await send<DoodleState>(`/playground/doodle/${id}/ops`, {
+        const d = await send<DoodleState>(`/playground/doodle/${id}/ops${asQs}`, {
           method: "POST",
           body: JSON.stringify({ ops: list }),
         });
@@ -788,6 +795,15 @@ async function main(): Promise<void> {
         case "clear":
           await runOps([{ op: "clear" }]);
           break;
+        case "present": {
+          if (!id) die("usage: plm doodle present <doodle-id> --x <n> --y <n> [--as <label>] [--tool <name>]");
+          await send(`/playground/doodle/${id}/present${asQs}`, {
+            method: "POST",
+            body: JSON.stringify({ x: num("x"), y: num("y"), tool: flag("tool") }),
+          });
+          console.error(`✓ ${asName ?? "cursor"} @ ${num("x")},${num("y")}`);
+          break;
+        }
         case "undo":
         case "redo": {
           if (!id) die(`usage: plm doodle ${sub} <doodle-id>`);
@@ -822,7 +838,7 @@ async function main(): Promise<void> {
           break;
         }
         default:
-          die("usage: plm doodle <new|ls|show|pull|push|add|text|draw|comment|image|move|copy|set|name|lock|hide|rm|layer|group|ungroup|bg|board|clear|undo|redo|watch>");
+          die("usage: plm doodle <new|ls|show|pull|push|add|text|draw|comment|image|move|copy|set|name|lock|hide|rm|layer|group|ungroup|present|bg|board|clear|undo|redo|watch>");
       }
       break;
     }
