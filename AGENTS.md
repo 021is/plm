@@ -105,18 +105,18 @@ online and `enqueue`s to `.plmhub/queue/` when offline (flush oldest-first via
 explicit `doodle_…` first arg overrides).
 
 ## Roadmaps (`plm roadmap`)
-A roadmap is a visual plan toward an outcome (Launch / first sale / first income / …) —
-the Launch tab, now Roadmaps, many per project. Content is a `plm.roadmap/v1` doc
-(phases = lanes / a left→right PATH × milestones = nodes); a milestone **references**
+A roadmap is a **single road of nodes** (ordered stops) toward an outcome (Launch /
+first sale / first income / …) — the Launch tab, now Roadmaps, many per project.
+Content is a `plm.roadmap/v1` doc (`{nodes, edges}`); a node **references**
 problems/decisions/goals by id (the link lives in the doc, never a FK). Thin client like
 `plm doodle`/`plm html`: the API (`plmhub-api/features/projects/roadmap.py`) owns the R2
-blob + the audit + governance; convenience verbs (`phase`/`milestone`/`assign`) just
-pull the doc, tweak it, and PUT it back. Verbs: `templates · new · use · ls · show ·
-pull · set · phase · milestone(ms) · assign · unassign · rename · rm · audit · delegate
-· watch`. `--as <label>` names the agent in the live-edit signal so a human watching the
-editor sees who's editing. Active roadmap via `new`/`use` (`activeRoadmap` in state.json;
-an explicit `rdmp_…` first arg overrides). `plm roadmap help` prints the contract.
-Delete is owner-only (soft-delete; content purged, audit kept).
+blob + the audit + governance; convenience verbs (`node`/`assign`) just pull the doc,
+tweak it, and PUT it back. Verbs: `templates · new · use · ls · show · pull · set · node ·
+assign · unassign · rename · rm · audit · delegate · watch`. `--as <label>` names the
+agent in the live-edit signal so a human watching the editor sees who's editing. Active
+roadmap via `new`/`use` (`activeRoadmap` in state.json; an explicit `rdmp_…` first arg
+overrides). The `launch` template = every production-readiness item as a node. Delete is
+owner-only (soft-delete; content purged, audit kept). `plm roadmap help` prints the contract.
 
 ## NOT done yet
 - npm publish + `api.plmhub.eu` public endpoint (CLI currently points at the dev API).

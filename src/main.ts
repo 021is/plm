@@ -281,7 +281,7 @@ const COMMAND_GROUPS: {
     desc: "Visual plans toward an outcome (Launch / first sale / …)",
     help: "plm roadmap help",
     verbs: [
-      "templates", "new", "use", "ls", "show", "pull", "set", "phase", "milestone",
+      "templates", "new", "use", "ls", "show", "pull", "set", "node",
       "assign", "unassign", "rename", "rm", "audit", "delegate", "watch",
     ],
   },
@@ -587,8 +587,7 @@ type RoadmapDetail = {
   meta: { id: string; title: string; status: string; owner_name?: string | null; nodes: number; rev: number };
   content: {
     schema: string;
-    phases: { id: string; label: string; color?: string; order?: number }[];
-    milestones: { id: string; label: string; phase: string; note?: string; status?: string; order?: number; refs: { problems: string[]; decisions: string[]; goals: string[] } }[];
+    nodes: { id: string; label: string; note?: string; status?: string; order?: number; refs: { problems: string[]; decisions: string[]; goals: string[] } }[];
     edges: { from: string; to: string }[];
   };
   refs: {
@@ -606,28 +605,27 @@ function rmid(prefix: string): string {
 }
 
 const ROADMAP_CONTRACT = `plm roadmap — drive a roadmap (a visual plan toward an outcome) over the API.
-A roadmap is phases (lanes, a left→right PATH) × milestones (nodes); each milestone
-references problems / decisions / goals by id (the link lives in the doc, never a FK).
-Content is a \`plm.roadmap/v1\` JSON blob in R2; the API keeps the audit + governance.
+A roadmap is a SINGLE ROAD of nodes (ordered stops); each node references problems /
+decisions / goals by id (the link lives in the doc, never a FK back). Content is a
+\`plm.roadmap/v1\` JSON blob in R2; the API keeps the audit + governance.
 
   plm roadmap templates                              list starter templates
   plm roadmap new <title> [--template launch|first-sale|first-income|fundraise|blank]   create → prints rdmp_… id, becomes active
   plm roadmap use <rdmp_…>                           set the ACTIVE roadmap (then omit the id below)
   plm roadmap ls                                     this project's roadmaps
-  plm roadmap show [<id>]                            phases + milestones + live progress (the OKR view)
+  plm roadmap show [<id>]                            the road's nodes in order + live progress (the OKR view)
   plm roadmap pull [<id>]                            raw content JSON (for editing + set)
   plm roadmap set  [<id>] --file <path|-> | --stdin | --content "…"   replace the whole content doc
-  plm roadmap phase [<id>] --label "…" [--color #hex]   add a phase → prints ph_… id
-  plm roadmap milestone [<id>] --label "…" [--phase <ph_…> --note "…"]   add a milestone → prints ms_… id  (alias: ms)
-  plm roadmap assign   [<id>] <ms_…> --problem <prob_…> | --decision <dec_…> | --goal <goal_…>   link a ref
-  plm roadmap unassign [<id>] <ms_…> --problem <prob_…> | --decision … | --goal …                remove a ref
+  plm roadmap node [<id>] --label "…" [--note "…" --status todo|doing|done]   add a node to the end → prints n_… id
+  plm roadmap assign   [<id>] <n_…> --problem <prob_…> | --decision <dec_…> | --goal <goal_…>   link a ref to a node
+  plm roadmap unassign [<id>] <n_…> --problem <prob_…> | --decision … | --goal …                remove a ref
   plm roadmap rename [<id>] <new title>
   plm roadmap rm <rdmp_…>                            delete (owner-only; soft-delete, content purged, audit kept)  (alias: delete)
   plm roadmap audit [<id>]                           the kept audit trail (outlives a delete)
   plm roadmap delegate [<id>] --user <usr_…> --right manage|delete   owner delegates rights
   plm roadmap watch [<id>]                           live rev signals (an agent following a human, or vice-versa)
 
-  Add --as <label> to set/phase/milestone/assign to name the agent in the live-edit signal.
+  Add --as <label> to set/node/assign to name the agent in the live-edit signal.
   Active roadmap: after 'new'/'use', omit the id — verbs use the active roadmap
   (.plmhub/state.json); an explicit rdmp_… first arg always overrides it.`;
 
@@ -710,19 +708,13 @@ async function roadmapTool(): Promise<void> {
       if (!id) die("usage: plm roadmap show <rdmp_…>");
       const d = await detail(id);
       console.log(`${d.meta.title}  [${d.meta.status}]  rev ${d.meta.rev}  · owner ${d.meta.owner_name ?? "?"}`);
-      const byPhase = new Map<string, typeof d.content.milestones>();
-      for (const m of d.content.milestones) {
-        if (!byPhase.has(m.phase)) byPhase.set(m.phase, []);
-        byPhase.get(m.phase)?.push(m);
-      }
-      for (const ph of d.content.phases) {
-        console.log(`\n▸ ${ph.label}`);
-        for (const m of byPhase.get(ph.id) ?? []) {
-          const s = d.stats[m.id];
-          const bar = s && s.total ? ` ${"█".repeat(Math.round(s.percent / 10)).padEnd(10, "░")} ${s.percent}% (${s.solved}/${s.total}${s.missing ? `, ${s.missing} removed` : ""})` : "";
-          console.log(`  • ${m.label}  [${s?.status ?? "empty"}]${bar}  ${m.id}`);
-        }
-      }
+      const ordered = [...d.content.nodes].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      ordered.forEach((m, i) => {
+        const s = d.stats[m.id];
+        const bar = s && s.total ? ` ${"█".repeat(Math.round(s.percent / 10)).padEnd(10, "░")} ${s.percent}% (${s.solved}/${s.total}${s.missing ? `, ${s.missing} removed` : ""})` : "";
+        const status = s && s.total ? s.status : m.status || "todo";
+        console.log(`  ${String(i + 1).padStart(2)}. ${m.label}  [${status}]${bar}  ${m.id}`);
+      });
       break;
     }
     case "pull": {
@@ -746,50 +738,35 @@ async function roadmapTool(): Promise<void> {
       console.log(id);
       break;
     }
-    case "phase": {
-      if (!id) die("usage: plm roadmap phase <rdmp_…> --label '…' [--color #hex]");
+    case "node": {
+      if (!id) die("usage: plm roadmap node <rdmp_…> --label '…' [--note '…' --status todo|doing|done]");
       const label = flag("label");
-      if (!label) die("plm roadmap phase needs --label '…'");
+      if (!label) die("plm roadmap node needs --label '…'");
       const d = await detail(id);
-      const pid = rmid("ph");
-      d.content.phases.push({ id: pid, label, ...(flag("color") ? { color: flag("color") } : {}), order: d.content.phases.length });
-      await putContent(id, d.content);
-      console.error(`✓ added phase "${label}"`);
-      console.log(pid);
-      break;
-    }
-    case "milestone":
-    case "ms": {
-      if (!id) die("usage: plm roadmap milestone <rdmp_…> --label '…' [--phase <ph_…> --note '…']");
-      const label = flag("label");
-      if (!label) die("plm roadmap milestone needs --label '…'");
-      const d = await detail(id);
-      const phase = flag("phase") || d.content.phases[0]?.id || "";
-      const mid = rmid("ms");
-      d.content.milestones.push({
-        id: mid,
+      const nid = rmid("n");
+      d.content.nodes.push({
+        id: nid,
         label,
-        phase,
         note: flag("note") ?? "",
-        status: "",
-        order: d.content.milestones.filter((m) => m.phase === phase).length,
+        status: flag("status") ?? "",
+        order: d.content.nodes.length,
         refs: { problems: [], decisions: [], goals: [] },
       });
       await putContent(id, d.content);
-      console.error(`✓ added milestone "${label}"${phase ? ` in ${phase}` : ""}`);
-      console.log(mid);
+      console.error(`✓ added node "${label}"`);
+      console.log(nid);
       break;
     }
     case "assign":
     case "unassign": {
       const ms = rest[0];
-      if (!id || !ms) die(`usage: plm roadmap ${verb} <ms_…> --problem <prob_…> | --decision <dec_…> | --goal <goal_…>`);
+      if (!id || !ms) die(`usage: plm roadmap ${verb} <n_…> --problem <prob_…> | --decision <dec_…> | --goal <goal_…>`);
       const kind = flag("problem") ? "problems" : flag("decision") ? "decisions" : flag("goal") ? "goals" : undefined;
       const ref = flag("problem") || flag("decision") || flag("goal");
       if (!kind || !ref) die("provide one of --problem <id> / --decision <id> / --goal <id>");
       const d = await detail(id);
-      const m = d.content.milestones.find((x) => x.id === ms);
-      if (!m) die(`milestone ${ms} not found in this roadmap`);
+      const m = d.content.nodes.find((x) => x.id === ms);
+      if (!m) die(`node ${ms} not found in this roadmap`);
       const set = new Set(m.refs[kind]);
       if (verb === "assign") set.add(ref);
       else set.delete(ref);
@@ -863,7 +840,7 @@ async function roadmapTool(): Promise<void> {
       break;
     }
     default:
-      die(`usage: plm roadmap <templates|new|use|ls|show|pull|set|phase|milestone|assign|unassign|rename|rm|audit|delegate|watch>   (plm roadmap help)`);
+      die(`usage: plm roadmap <templates|new|use|ls|show|pull|set|node|assign|unassign|rename|rm|audit|delegate|watch>   (plm roadmap help)`);
   }
 }
 
