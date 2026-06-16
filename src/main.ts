@@ -277,6 +277,15 @@ const COMMAND_GROUPS: {
     verbs: ["new", "use", "ls", "show", "pull", "set", "push", "rename", "rm"],
   },
   {
+    group: "roadmap",
+    desc: "Visual plans toward an outcome (Launch / first sale / …)",
+    help: "plm roadmap help",
+    verbs: [
+      "templates", "new", "use", "ls", "show", "pull", "set", "phase", "milestone",
+      "assign", "unassign", "rename", "rm", "audit", "delegate", "watch",
+    ],
+  },
+  {
     group: "graph",
     desc: "Code Map (the LLM is the parser)",
     help: "plm graph schema",
@@ -567,6 +576,297 @@ async function textTool(kind: "html" | "markdown"): Promise<void> {
   }
 }
 
+// ── roadmaps — the `plm roadmap` group. A roadmap is a visual plan toward an
+//    outcome (Launch / First sale / …); the Launch tab becomes one of many. Its
+//    milestone CONTENT is a `plm.roadmap/v1` JSON doc in R2 (the API owns
+//    persistence + the audit + governance); a milestone REFERENCES problems /
+//    decisions / goals by id — the link lives only in the doc, never a FK back.
+//    Thin client like `plm doodle`/`plm html`: convenience verbs (phase /
+//    milestone / assign) just pull the doc, tweak it, and PUT it back. ──
+type RoadmapDetail = {
+  meta: { id: string; title: string; status: string; owner_name?: string | null; nodes: number; rev: number };
+  content: {
+    schema: string;
+    phases: { id: string; label: string; color?: string; order?: number }[];
+    milestones: { id: string; label: string; phase: string; note?: string; status?: string; order?: number; refs: { problems: string[]; decisions: string[]; goals: string[] } }[];
+    edges: { from: string; to: string }[];
+  };
+  refs: {
+    problems: Record<string, { id: string; title: string; status: string }>;
+    decisions: Record<string, { id: string; title: string; status: string }>;
+    goals: Record<string, { id: string; title: string; status: string }>;
+  };
+  stats: Record<string, { total: number; solved: number; percent: number; status: string; missing: number }>;
+  is_owner: boolean;
+  can_delete: boolean;
+};
+
+function rmid(prefix: string): string {
+  return `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+}
+
+const ROADMAP_CONTRACT = `plm roadmap — drive a roadmap (a visual plan toward an outcome) over the API.
+A roadmap is phases (lanes, a left→right PATH) × milestones (nodes); each milestone
+references problems / decisions / goals by id (the link lives in the doc, never a FK).
+Content is a \`plm.roadmap/v1\` JSON blob in R2; the API keeps the audit + governance.
+
+  plm roadmap templates                              list starter templates
+  plm roadmap new <title> [--template launch|first-sale|first-income|fundraise|blank]   create → prints rdmp_… id, becomes active
+  plm roadmap use <rdmp_…>                           set the ACTIVE roadmap (then omit the id below)
+  plm roadmap ls                                     this project's roadmaps
+  plm roadmap show [<id>]                            phases + milestones + live progress (the OKR view)
+  plm roadmap pull [<id>]                            raw content JSON (for editing + set)
+  plm roadmap set  [<id>] --file <path|-> | --stdin | --content "…"   replace the whole content doc
+  plm roadmap phase [<id>] --label "…" [--color #hex]   add a phase → prints ph_… id
+  plm roadmap milestone [<id>] --label "…" [--phase <ph_…> --note "…"]   add a milestone → prints ms_… id  (alias: ms)
+  plm roadmap assign   [<id>] <ms_…> --problem <prob_…> | --decision <dec_…> | --goal <goal_…>   link a ref
+  plm roadmap unassign [<id>] <ms_…> --problem <prob_…> | --decision … | --goal …                remove a ref
+  plm roadmap rename [<id>] <new title>
+  plm roadmap rm <rdmp_…>                            delete (owner-only; soft-delete, content purged, audit kept)  (alias: delete)
+  plm roadmap audit [<id>]                           the kept audit trail (outlives a delete)
+  plm roadmap delegate [<id>] --user <usr_…> --right manage|delete   owner delegates rights
+  plm roadmap watch [<id>]                           live rev signals (an agent following a human, or vice-versa)
+
+  Add --as <label> to set/phase/milestone/assign to name the agent in the live-edit signal.
+  Active roadmap: after 'new'/'use', omit the id — verbs use the active roadmap
+  (.plmhub/state.json); an explicit rdmp_… first arg always overrides it.`;
+
+async function roadmapTool(): Promise<void> {
+  const link = loadLink();
+  if (!link) die("not linked. run: plm link <project-slug>");
+  const proj = link.project;
+  const verb = positionals[1];
+  const args = positionals.slice(2);
+  const state = loadState();
+  let id: string | undefined;
+  let rest: string[];
+  if (args[0]?.startsWith("rdmp_")) {
+    id = args[0];
+    rest = args.slice(1);
+  } else if (state.activeRoadmap) {
+    id = state.activeRoadmap;
+    rest = args;
+  } else {
+    id = args[0];
+    rest = args.slice(1);
+  }
+  const send = async <T>(path: string, init?: RequestInit): Promise<T> => {
+    const r = await api<T>(`/projects/${proj}${path}`, init);
+    if (!r.ok || r.data === undefined) die(r.error ?? "request failed");
+    return r.data;
+  };
+  const setActive = (rid_: string) => saveState({ ...loadState(), activeRoadmap: rid_ });
+  const asQ = flag("as") ? `?as=${encodeURIComponent(flag("as") as string)}` : "";
+  const detail = (rid_: string) => send<RoadmapDetail>(`/roadmaps/${rid_}`, { method: "GET" });
+  const putContent = (rid_: string, content: RoadmapDetail["content"]) =>
+    send<{ rev: number }>(`/roadmaps/${rid_}/content${asQ}`, {
+      method: "PUT",
+      body: JSON.stringify({ content }),
+    });
+
+  switch (verb) {
+    case undefined:
+    case "help":
+      console.log(ROADMAP_CONTRACT);
+      break;
+    case "templates": {
+      const t = await send<{ key: string; label: string; description: string }[]>(
+        "/roadmaps/templates",
+        { method: "GET" },
+      );
+      for (const x of t) console.log(`${x.key.padEnd(14)} ${x.label} — ${x.description}`);
+      break;
+    }
+    case "new": {
+      const title = (args.filter((a) => !a.startsWith("rdmp_")).join(" ").trim() || flag("title") || "").trim();
+      if (!title) die('usage: plm roadmap new <title> [--template launch|first-sale|first-income|fundraise|blank]');
+      const r = await send<RoadmapDetail>("/roadmaps", {
+        method: "POST",
+        body: JSON.stringify({ title, template: flag("template") }),
+      });
+      setActive(r.meta.id);
+      console.error(`✓ created roadmap "${title}"${flag("template") ? ` from ${flag("template")}` : ""} · now active`);
+      console.log(r.meta.id);
+      break;
+    }
+    case "use": {
+      if (!id) die("usage: plm roadmap use <rdmp_…>");
+      setActive(id);
+      console.error(`✓ active roadmap: ${id}`);
+      console.log(id);
+      break;
+    }
+    case "ls": {
+      const rows = await send<RoadmapDetail["meta"][] & { status: string }[]>("/roadmaps", { method: "GET" });
+      if (!rows.length) {
+        console.log("(no roadmaps yet — plm roadmap new <title> [--template launch])");
+        break;
+      }
+      for (const r of rows as { id: string; title: string; status: string; nodes: number }[])
+        console.log(`${r.id}  [${r.status}]  ${r.title}  (${r.nodes} milestones)`);
+      break;
+    }
+    case "show": {
+      if (!id) die("usage: plm roadmap show <rdmp_…>");
+      const d = await detail(id);
+      console.log(`${d.meta.title}  [${d.meta.status}]  rev ${d.meta.rev}  · owner ${d.meta.owner_name ?? "?"}`);
+      const byPhase = new Map<string, typeof d.content.milestones>();
+      for (const m of d.content.milestones) {
+        if (!byPhase.has(m.phase)) byPhase.set(m.phase, []);
+        byPhase.get(m.phase)?.push(m);
+      }
+      for (const ph of d.content.phases) {
+        console.log(`\n▸ ${ph.label}`);
+        for (const m of byPhase.get(ph.id) ?? []) {
+          const s = d.stats[m.id];
+          const bar = s && s.total ? ` ${"█".repeat(Math.round(s.percent / 10)).padEnd(10, "░")} ${s.percent}% (${s.solved}/${s.total}${s.missing ? `, ${s.missing} removed` : ""})` : "";
+          console.log(`  • ${m.label}  [${s?.status ?? "empty"}]${bar}  ${m.id}`);
+        }
+      }
+      break;
+    }
+    case "pull": {
+      if (!id) die("usage: plm roadmap pull <rdmp_…>");
+      console.log(JSON.stringify((await detail(id)).content, null, 2));
+      break;
+    }
+    case "set":
+    case "push": {
+      if (!id) die("usage: plm roadmap set <rdmp_…> --file <path|-> | --stdin | --content '{…}'");
+      const body = await readDocBody();
+      if (body === undefined) die("plm roadmap set needs --content '{…}', --file <path|->, or --stdin");
+      let content: RoadmapDetail["content"];
+      try {
+        content = JSON.parse(body);
+      } catch {
+        die("content is not valid JSON");
+      }
+      const r = await putContent(id, content);
+      console.error(`✓ saved ${id} · rev ${r.rev}`);
+      console.log(id);
+      break;
+    }
+    case "phase": {
+      if (!id) die("usage: plm roadmap phase <rdmp_…> --label '…' [--color #hex]");
+      const label = flag("label");
+      if (!label) die("plm roadmap phase needs --label '…'");
+      const d = await detail(id);
+      const pid = rmid("ph");
+      d.content.phases.push({ id: pid, label, ...(flag("color") ? { color: flag("color") } : {}), order: d.content.phases.length });
+      await putContent(id, d.content);
+      console.error(`✓ added phase "${label}"`);
+      console.log(pid);
+      break;
+    }
+    case "milestone":
+    case "ms": {
+      if (!id) die("usage: plm roadmap milestone <rdmp_…> --label '…' [--phase <ph_…> --note '…']");
+      const label = flag("label");
+      if (!label) die("plm roadmap milestone needs --label '…'");
+      const d = await detail(id);
+      const phase = flag("phase") || d.content.phases[0]?.id || "";
+      const mid = rmid("ms");
+      d.content.milestones.push({
+        id: mid,
+        label,
+        phase,
+        note: flag("note") ?? "",
+        status: "",
+        order: d.content.milestones.filter((m) => m.phase === phase).length,
+        refs: { problems: [], decisions: [], goals: [] },
+      });
+      await putContent(id, d.content);
+      console.error(`✓ added milestone "${label}"${phase ? ` in ${phase}` : ""}`);
+      console.log(mid);
+      break;
+    }
+    case "assign":
+    case "unassign": {
+      const ms = rest[0];
+      if (!id || !ms) die(`usage: plm roadmap ${verb} <ms_…> --problem <prob_…> | --decision <dec_…> | --goal <goal_…>`);
+      const kind = flag("problem") ? "problems" : flag("decision") ? "decisions" : flag("goal") ? "goals" : undefined;
+      const ref = flag("problem") || flag("decision") || flag("goal");
+      if (!kind || !ref) die("provide one of --problem <id> / --decision <id> / --goal <id>");
+      const d = await detail(id);
+      const m = d.content.milestones.find((x) => x.id === ms);
+      if (!m) die(`milestone ${ms} not found in this roadmap`);
+      const set = new Set(m.refs[kind]);
+      if (verb === "assign") set.add(ref);
+      else set.delete(ref);
+      m.refs[kind] = [...set];
+      await putContent(id, d.content);
+      console.error(`✓ ${verb === "assign" ? "assigned" : "unassigned"} ${ref} ${verb === "assign" ? "→" : "from"} ${m.label}`);
+      console.log(ms);
+      break;
+    }
+    case "rename": {
+      if (!id) die("usage: plm roadmap rename [<rdmp_…>] <new title>");
+      const newTitle = (rest.join(" ").trim() || flag("title") || "").trim();
+      if (!newTitle) die("usage: plm roadmap rename [<rdmp_…>] <new title>");
+      await send(`/roadmaps/${id}`, { method: "PATCH", body: JSON.stringify({ title: newTitle }) });
+      console.error(`✓ renamed ${id} → ${newTitle}`);
+      break;
+    }
+    case "rm":
+    case "delete": {
+      if (!id) die("usage: plm roadmap rm <rdmp_…>");
+      await send(`/roadmaps/${id}`, { method: "DELETE" });
+      if (state.activeRoadmap === id) saveState({ ...loadState(), activeRoadmap: undefined });
+      console.error(`✓ deleted ${id} (content purged; audit kept)`);
+      break;
+    }
+    case "audit": {
+      if (!id) die("usage: plm roadmap audit <rdmp_…>");
+      const events = await send<{ action: string; detail?: string; actor_name?: string; created_at: string }[]>(
+        `/roadmaps/${id}/audit`,
+        { method: "GET" },
+      );
+      for (const e of events)
+        console.log(`${e.created_at.slice(0, 19).replace("T", " ")}  ${e.action.padEnd(11)} ${e.detail ?? ""}  · ${e.actor_name ?? "?"}`);
+      break;
+    }
+    case "delegate": {
+      if (!id) die("usage: plm roadmap delegate <rdmp_…> --user <usr_…> --right manage|delete");
+      const user = flag("user");
+      if (!user) die("plm roadmap delegate needs --user <usr_…>");
+      await send(`/roadmaps/${id}/delegates`, {
+        method: "POST",
+        body: JSON.stringify({ user_id: user, right: flag("right") || "manage" }),
+      });
+      console.error(`✓ delegated ${flag("right") || "manage"} to ${user}`);
+      break;
+    }
+    case "watch": {
+      if (!id) die("usage: plm roadmap watch <rdmp_…>   # live rev signals (Ctrl-C to stop)");
+      const t = loadConfig().token ?? process.env.PLMHUB_TOKEN;
+      const res = await fetch(`${apiUrl()}/projects/${proj}/roadmaps/${id}/stream`, {
+        headers: { ...(t ? { Authorization: `Bearer ${t}` } : {}) },
+      });
+      if (!res.ok || !res.body) die(`watch failed: HTTP ${res.status}`);
+      console.error(`watching ${id} — Ctrl-C to stop`);
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i = buf.indexOf("\n\n");
+        while (i >= 0) {
+          const evt = buf.slice(0, i);
+          buf = buf.slice(i + 2);
+          const data = evt.split("\n").find((l) => l.startsWith("data:"))?.slice(5).trim();
+          if (data && data !== "{}") console.log(data);
+          i = buf.indexOf("\n\n");
+        }
+      }
+      break;
+    }
+    default:
+      die(`usage: plm roadmap <templates|new|use|ls|show|pull|set|phase|milestone|assign|unassign|rename|rm|audit|delegate|watch>   (plm roadmap help)`);
+  }
+}
+
 async function main(): Promise<void> {
   // opportunistic outbox flush: cheap no-op when empty, never fatal
   if (queuedEvents().length && cmd !== "queue") {
@@ -849,6 +1149,10 @@ async function main(): Promise<void> {
     case "md":
     case "markdown":
       await textTool(cmd === "html" ? "html" : "markdown");
+      break;
+    case "roadmap":
+    case "roadmaps":
+      await roadmapTool();
       break;
     case "ddl": // alias for `doodle`
     case "doodle": {

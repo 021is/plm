@@ -36,6 +36,7 @@ export type WorkState = {
   activeDoodle?: string;
   activeHtml?: string;
   activeMd?: string;
+  activeRoadmap?: string;
 };
 export type QueuedEvent = { path: string; method: string; body: unknown; createdAt: string };
 

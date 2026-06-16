@@ -27,6 +27,7 @@
 - `plm queue [--flush]` → inspect/deliver the offline outbox
 - `plm doodle <verb>` (alias `ddl`) → drive a doodle the way the editor toolbar does (see below)
 - `plm html <verb>` · `plm md <verb>` (alias `markdown`) → playground text-file groups (see below)
+- `plm roadmap <verb>` → visual plans toward an outcome (the Launch tab, now Roadmaps; see below)
 - `plm <any git command>` → spawnSync git, same args/stdio/exit code
 - PLANNED (designs locked 2026-06-11): `plm work <problem-id>` (branch + tell hub who/where),
   `plm commit -m` (git commit + PLM: trailer + async hub event), `plm done [--solution]`,
@@ -102,6 +103,20 @@ online and `enqueue`s to `.plmhub/queue/` when offline (flush oldest-first via
 (`show`/`pull`/`ls`), `new`, and `present` still need the server. **Active doodle:**
 `new`/`use` store `activeDoodle` in `.plmhub/state.json` so verbs omit the id (an
 explicit `doodle_…` first arg overrides).
+
+## Roadmaps (`plm roadmap`)
+A roadmap is a visual plan toward an outcome (Launch / first sale / first income / …) —
+the Launch tab, now Roadmaps, many per project. Content is a `plm.roadmap/v1` doc
+(phases = lanes / a left→right PATH × milestones = nodes); a milestone **references**
+problems/decisions/goals by id (the link lives in the doc, never a FK). Thin client like
+`plm doodle`/`plm html`: the API (`plmhub-api/features/projects/roadmap.py`) owns the R2
+blob + the audit + governance; convenience verbs (`phase`/`milestone`/`assign`) just
+pull the doc, tweak it, and PUT it back. Verbs: `templates · new · use · ls · show ·
+pull · set · phase · milestone(ms) · assign · unassign · rename · rm · audit · delegate
+· watch`. `--as <label>` names the agent in the live-edit signal so a human watching the
+editor sees who's editing. Active roadmap via `new`/`use` (`activeRoadmap` in state.json;
+an explicit `rdmp_…` first arg overrides). `plm roadmap help` prints the contract.
+Delete is owner-only (soft-delete; content purged, audit kept).
 
 ## NOT done yet
 - npm publish + `api.plmhub.eu` public endpoint (CLI currently points at the dev API).
