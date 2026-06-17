@@ -107,12 +107,12 @@ explicit `doodle_…` first arg overrides).
 ## Roadmaps (`plm roadmap`)
 A roadmap is a **single road of nodes** (ordered stops) toward an outcome (Launch /
 first sale / first income / …) — the Launch tab, now Roadmaps, many per project.
-Content is a `plm.roadmap/v1` doc (`{nodes, edges}`); a node **references**
-problems/decisions/goals by id (the link lives in the doc, never a FK). Thin client like
-`plm doodle`/`plm html`: the API (`plmhub-api/features/projects/roadmap.py`) owns the R2
-blob + the audit + governance; convenience verbs (`node`/`assign`) just pull the doc,
-tweak it, and PUT it back. Verbs: `templates · new · use · ls · show · pull · set · node ·
-assign · unassign · rename · rm · audit · delegate · watch`. `--as <label>` names the
+Content is a `plm.roadmap/v1` doc (`{nodes, edges}`); a node = `{label, status
+(todo|doing|done), icon, note (markdown), comments[]}` — **no problem/work links**. Thin
+client like `plm doodle`/`plm html`: the API (`plmhub-api/features/projects/roadmap.py`)
+owns the R2 blob + audit + governance; `node` pulls the doc / tweaks / PUTs, `comment`
+posts via the API (server-stamps who+when, `--parent` nests). Verbs: `templates · new ·
+use · ls · show · pull · set · node · comment · rename · rm · audit · delegate · watch`. `--as <label>` names the
 agent in the live-edit signal so a human watching the editor sees who's editing. Active
 roadmap via `new`/`use` (`activeRoadmap` in state.json; an explicit `rdmp_…` first arg
 overrides). The `launch` template = every production-readiness item as a node. Delete is

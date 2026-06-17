@@ -282,7 +282,7 @@ const COMMAND_GROUPS: {
     help: "plm roadmap help",
     verbs: [
       "templates", "new", "use", "ls", "show", "pull", "set", "node",
-      "assign", "unassign", "rename", "rm", "audit", "delegate", "watch",
+      "comment", "rename", "rm", "audit", "delegate", "watch",
     ],
   },
   {
@@ -583,19 +583,14 @@ async function textTool(kind: "html" | "markdown"): Promise<void> {
 //    decisions / goals by id — the link lives only in the doc, never a FK back.
 //    Thin client like `plm doodle`/`plm html`: convenience verbs (phase /
 //    milestone / assign) just pull the doc, tweak it, and PUT it back. ──
+type RmComment = { id: string; by: string; by_id?: string | null; at: string; body: string; parent?: string | null };
 type RoadmapDetail = {
   meta: { id: string; title: string; status: string; owner_name?: string | null; nodes: number; rev: number };
   content: {
     schema: string;
-    nodes: { id: string; label: string; note?: string; status?: string; order?: number; refs: { problems: string[]; decisions: string[]; goals: string[] } }[];
+    nodes: { id: string; label: string; note?: string; status?: string; icon?: string; order?: number; comments?: RmComment[] }[];
     edges: { from: string; to: string }[];
   };
-  refs: {
-    problems: Record<string, { id: string; title: string; status: string }>;
-    decisions: Record<string, { id: string; title: string; status: string }>;
-    goals: Record<string, { id: string; title: string; status: string }>;
-  };
-  stats: Record<string, { total: number; solved: number; percent: number; status: string; missing: number }>;
   is_owner: boolean;
   can_delete: boolean;
 };
@@ -605,9 +600,9 @@ function rmid(prefix: string): string {
 }
 
 const ROADMAP_CONTRACT = `plm roadmap — drive a roadmap (a visual plan toward an outcome) over the API.
-A roadmap is a SINGLE ROAD of nodes (ordered stops); each node references problems /
-decisions / goals by id (the link lives in the doc, never a FK back). Content is a
-\`plm.roadmap/v1\` JSON blob in R2; the API keeps the audit + governance.
+A roadmap is a SINGLE ROAD of ordered nodes; each node has a label, status
+(todo|doing|done), an optional lucide icon, a markdown note, and comments — all in
+the \`plm.roadmap/v1\` JSON blob in R2. The API keeps the audit + governance.
 
   plm roadmap templates                              list starter templates
   plm roadmap new <title> [--template launch|first-sale|first-income|fundraise|blank]   create → prints rdmp_… id, becomes active
@@ -616,16 +611,15 @@ decisions / goals by id (the link lives in the doc, never a FK back). Content is
   plm roadmap show [<id>]                            the road's nodes in order + live progress (the OKR view)
   plm roadmap pull [<id>]                            raw content JSON (for editing + set)
   plm roadmap set  [<id>] --file <path|-> | --stdin | --content "…"   replace the whole content doc
-  plm roadmap node [<id>] --label "…" [--note "…" --status todo|doing|done]   add a node to the end → prints n_… id
-  plm roadmap assign   [<id>] <n_…> --problem <prob_…> | --decision <dec_…> | --goal <goal_…>   link a ref to a node
-  plm roadmap unassign [<id>] <n_…> --problem <prob_…> | --decision … | --goal …                remove a ref
+  plm roadmap node [<id>] --label "…" [--note "…" --icon <Lucide> --status todo|doing|done]   add a node → prints n_… id
+  plm roadmap comment [<id>] <n_…> --body "…" [--parent <c_…>]   add a node comment (nested reply via --parent)
   plm roadmap rename [<id>] <new title>
   plm roadmap rm <rdmp_…>                            delete (owner-only; soft-delete, content purged, audit kept)  (alias: delete)
   plm roadmap audit [<id>]                           the kept audit trail (outlives a delete)
   plm roadmap delegate [<id>] --user <usr_…> --right manage|delete   owner delegates rights
   plm roadmap watch [<id>]                           live rev signals (an agent following a human, or vice-versa)
 
-  Add --as <label> to set/node/assign to name the agent in the live-edit signal.
+  Add --as <label> to set/node/comment to name the agent in the live-edit signal.
   Active roadmap: after 'new'/'use', omit the id — verbs use the active roadmap
   (.plmhub/state.json); an explicit rdmp_… first arg always overrides it.`;
 
@@ -710,10 +704,8 @@ async function roadmapTool(): Promise<void> {
       console.log(`${d.meta.title}  [${d.meta.status}]  rev ${d.meta.rev}  · owner ${d.meta.owner_name ?? "?"}`);
       const ordered = [...d.content.nodes].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
       ordered.forEach((m, i) => {
-        const s = d.stats[m.id];
-        const bar = s && s.total ? ` ${"█".repeat(Math.round(s.percent / 10)).padEnd(10, "░")} ${s.percent}% (${s.solved}/${s.total}${s.missing ? `, ${s.missing} removed` : ""})` : "";
-        const status = s && s.total ? s.status : m.status || "todo";
-        console.log(`  ${String(i + 1).padStart(2)}. ${m.label}  [${status}]${bar}  ${m.id}`);
+        const cc = m.comments?.length ? `  💬${m.comments.length}` : "";
+        console.log(`  ${String(i + 1).padStart(2)}. ${m.label}  [${m.status || "todo"}]${m.icon ? `  (${m.icon})` : ""}${cc}  ${m.id}`);
       });
       break;
     }
@@ -739,7 +731,7 @@ async function roadmapTool(): Promise<void> {
       break;
     }
     case "node": {
-      if (!id) die("usage: plm roadmap node <rdmp_…> --label '…' [--note '…' --status todo|doing|done]");
+      if (!id) die("usage: plm roadmap node <rdmp_…> --label '…' [--note '…' --icon <Lucide> --status todo|doing|done]");
       const label = flag("label");
       if (!label) die("plm roadmap node needs --label '…'");
       const d = await detail(id);
@@ -749,31 +741,25 @@ async function roadmapTool(): Promise<void> {
         label,
         note: flag("note") ?? "",
         status: flag("status") ?? "",
+        icon: flag("icon") ?? "",
         order: d.content.nodes.length,
-        refs: { problems: [], decisions: [], goals: [] },
+        comments: [],
       });
       await putContent(id, d.content);
       console.error(`✓ added node "${label}"`);
       console.log(nid);
       break;
     }
-    case "assign":
-    case "unassign": {
+    case "comment": {
       const ms = rest[0];
-      if (!id || !ms) die(`usage: plm roadmap ${verb} <n_…> --problem <prob_…> | --decision <dec_…> | --goal <goal_…>`);
-      const kind = flag("problem") ? "problems" : flag("decision") ? "decisions" : flag("goal") ? "goals" : undefined;
-      const ref = flag("problem") || flag("decision") || flag("goal");
-      if (!kind || !ref) die("provide one of --problem <id> / --decision <id> / --goal <id>");
-      const d = await detail(id);
-      const m = d.content.nodes.find((x) => x.id === ms);
-      if (!m) die(`node ${ms} not found in this roadmap`);
-      const set = new Set(m.refs[kind]);
-      if (verb === "assign") set.add(ref);
-      else set.delete(ref);
-      m.refs[kind] = [...set];
-      await putContent(id, d.content);
-      console.error(`✓ ${verb === "assign" ? "assigned" : "unassigned"} ${ref} ${verb === "assign" ? "→" : "from"} ${m.label}`);
-      console.log(ms);
+      const text = flag("body");
+      if (!id || !ms || !text) die("usage: plm roadmap comment <rdmp_…> <n_…> --body '…' [--parent <c_…>]");
+      const c = await send<{ id: string }>(`/roadmaps/${id}/comments${asQ}`, {
+        method: "POST",
+        body: JSON.stringify({ node_id: ms, body: text, parent_id: flag("parent") ?? null }),
+      });
+      console.error(`✓ commented on ${ms}`);
+      console.log(c.id);
       break;
     }
     case "rename": {
@@ -840,7 +826,7 @@ async function roadmapTool(): Promise<void> {
       break;
     }
     default:
-      die(`usage: plm roadmap <templates|new|use|ls|show|pull|set|node|assign|unassign|rename|rm|audit|delegate|watch>   (plm roadmap help)`);
+      die(`usage: plm roadmap <templates|new|use|ls|show|pull|set|node|comment|rename|rm|audit|delegate|watch>   (plm roadmap help)`);
   }
 }
 
