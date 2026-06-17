@@ -612,14 +612,24 @@ the \`plm.roadmap/v1\` JSON blob in R2. The API keeps the audit + governance.
   plm roadmap pull [<id>]                            raw content JSON (for editing + set)
   plm roadmap set  [<id>] --file <path|-> | --stdin | --content "…"   replace the whole content doc
   plm roadmap node [<id>] --label "…" [--note "…" --icon <Lucide> --status todo|doing|done]   add a node → prints n_… id
+  plm roadmap node-set [<id>] --node <n_…> [--label "…" --note "…" --icon <Lucide> --status …]   edit an existing node
+  plm roadmap node-rm [<id>] <n_…>                   delete a node (reindexes order)
+  plm roadmap reorder [<id>] <n_…> <n_…> …           set node order (listed first, rest keep order)
   plm roadmap comment [<id>] <n_…> --body "…" [--parent <c_…>]   add a node comment (nested reply via --parent)
+  plm roadmap comment-edit [<id>] <c_…> --body "…"   edit your own comment (stamps "edited")
+  plm roadmap comment-rm [<id>] <c_…>                delete your own comment (while fresh)
   plm roadmap rename [<id>] <new title>
+  plm roadmap archive | unarchive [<id>]             toggle the roadmap's archived status
   plm roadmap rm <rdmp_…>                            delete (owner-only; soft-delete, content purged, audit kept)  (alias: delete)
   plm roadmap audit [<id>]                           the kept audit trail (outlives a delete)
   plm roadmap delegate [<id>] --user <usr_…> --right manage|delete   owner delegates rights
+  plm roadmap undelegate [<id>] --user <usr_…>       owner revokes a delegate
+  plm roadmap transfer [<id>] --user <usr_…>         owner transfers ownership (new owner must be a member)
+  plm roadmap overview                               the roadmaps-page diagram JSON (card positions + links)
+  plm roadmap overview-set --file <path|-> | --stdin | --content "…"   save the roadmaps-page layout
   plm roadmap watch [<id>]                           live rev signals (an agent following a human, or vice-versa)
 
-  Add --as <label> to set/node/comment to name the agent in the live-edit signal.
+  Add --as <label> to set/node*/comment*/rename/archive to name the agent in the live-edit signal.
   Active roadmap: after 'new'/'use', omit the id — verbs use the active roadmap
   (.plmhub/state.json); an explicit rdmp_… first arg always overrides it.`;
 
@@ -695,7 +705,7 @@ async function roadmapTool(): Promise<void> {
         break;
       }
       for (const r of rows as { id: string; title: string; status: string; nodes: number }[])
-        console.log(`${r.id}  [${r.status}]  ${r.title}  (${r.nodes} milestones)`);
+        console.log(`${r.id}  [${r.status}]  ${r.title}  (${r.nodes} cliffs)`);
       break;
     }
     case "show": {
@@ -825,8 +835,115 @@ async function roadmapTool(): Promise<void> {
       }
       break;
     }
+    case "archive":
+    case "unarchive": {
+      if (!id) die("usage: plm roadmap archive|unarchive [<rdmp_…>]");
+      const status = verb === "archive" ? "archived" : "active";
+      await send(`/roadmaps/${id}${asQ}`, { method: "PATCH", body: JSON.stringify({ status }) });
+      console.error(`✓ ${id} → ${status}`);
+      break;
+    }
+    case "node-set": {
+      const nid = flag("node") ?? rest[0];
+      if (!id || !nid) die("usage: plm roadmap node-set [<rdmp_…>] --node <n_…> [--label '…' --note '…' --icon <Lucide> --status todo|doing|done]");
+      const d = await detail(id);
+      const n = d.content.nodes.find((x) => x.id === nid);
+      if (!n) die(`node ${nid} not found in ${id}`);
+      const lbl = flag("label");
+      const note = flag("note");
+      const icon = flag("icon");
+      const status = flag("status");
+      if (lbl !== undefined) n.label = lbl;
+      if (note !== undefined) n.note = note;
+      if (icon !== undefined) n.icon = icon;
+      if (status !== undefined) n.status = status;
+      await putContent(id, d.content);
+      console.error(`✓ updated ${nid}`);
+      console.log(nid);
+      break;
+    }
+    case "node-rm": {
+      const nid = rest[0] ?? flag("node");
+      if (!id || !nid) die("usage: plm roadmap node-rm [<rdmp_…>] <n_…>");
+      const d = await detail(id);
+      const before = d.content.nodes.length;
+      d.content.nodes = d.content.nodes.filter((x) => x.id !== nid);
+      if (d.content.nodes.length === before) die(`node ${nid} not found in ${id}`);
+      d.content.nodes
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+        .forEach((x, i) => {
+          x.order = i;
+        });
+      await putContent(id, d.content);
+      console.error(`✓ removed ${nid}`);
+      break;
+    }
+    case "reorder": {
+      if (!id || rest.length === 0) die("usage: plm roadmap reorder [<rdmp_…>] <n_…> <n_…> …   (listed first, then any remaining keep their order)");
+      const d = await detail(id);
+      const pos = new Map(rest.map((nid, i) => [nid, i] as const));
+      d.content.nodes
+        .sort((a, b) => (pos.get(a.id) ?? rest.length + (a.order ?? 0)) - (pos.get(b.id) ?? rest.length + (b.order ?? 0)))
+        .forEach((x, i) => {
+          x.order = i;
+        });
+      await putContent(id, d.content);
+      console.error(`✓ reordered ${id}`);
+      break;
+    }
+    case "comment-edit": {
+      const cid = rest[0];
+      const text = flag("body");
+      if (!id || !cid || !text) die("usage: plm roadmap comment-edit [<rdmp_…>] <c_…> --body '…'   (author only)");
+      await send(`/roadmaps/${id}/comments/${cid}${asQ}`, { method: "PATCH", body: JSON.stringify({ body: text }) });
+      console.error(`✓ edited ${cid}`);
+      break;
+    }
+    case "comment-rm": {
+      const cid = rest[0];
+      if (!id || !cid) die("usage: plm roadmap comment-rm [<rdmp_…>] <c_…>   (author only, while fresh)");
+      await send(`/roadmaps/${id}/comments/${cid}${asQ}`, { method: "DELETE" });
+      console.error(`✓ removed ${cid}`);
+      break;
+    }
+    case "undelegate": {
+      const user = flag("user") ?? rest[0];
+      if (!id || !user) die("usage: plm roadmap undelegate [<rdmp_…>] --user <usr_…>");
+      await send(`/roadmaps/${id}/delegates/${user}`, { method: "DELETE" });
+      console.error(`✓ revoked ${user} on ${id}`);
+      break;
+    }
+    case "transfer": {
+      const user = flag("user") ?? rest[0];
+      if (!id || !user) die("usage: plm roadmap transfer [<rdmp_…>] --user <usr_…>   (owner-only)");
+      await send(`/roadmaps/${id}/transfer`, { method: "POST", body: JSON.stringify({ user_id: user }) });
+      console.error(`✓ transferred ${id} → ${user}`);
+      break;
+    }
+    case "overview": {
+      const ov = await send<unknown>("/roadmaps-overview", { method: "GET" });
+      console.log(JSON.stringify(ov, null, 2));
+      break;
+    }
+    case "overview-set": {
+      const body = await readDocBody();
+      if (body === undefined) die("plm roadmap overview-set needs --content '{…}', --file <path|->, or --stdin");
+      let doc: { positions?: Record<string, unknown>; edges?: unknown[] };
+      try {
+        doc = JSON.parse(body);
+      } catch {
+        die("overview is not valid JSON");
+      }
+      const r = await send<unknown>("/roadmaps-overview", {
+        method: "PUT",
+        body: JSON.stringify({ positions: doc.positions ?? {}, edges: doc.edges ?? [] }),
+      });
+      console.error("✓ overview saved");
+      console.log(JSON.stringify(r));
+      break;
+    }
     default:
-      die(`usage: plm roadmap <templates|new|use|ls|show|pull|set|node|comment|rename|rm|audit|delegate|watch>   (plm roadmap help)`);
+      die(`usage: plm roadmap <templates|new|use|ls|show|pull|set|node|node-set|node-rm|reorder|comment|comment-edit|comment-rm|rename|archive|unarchive|rm|audit|delegate|undelegate|transfer|overview|overview-set|watch>   (plm roadmap help)`);
   }
 }
 
