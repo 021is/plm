@@ -47,6 +47,17 @@ function die(msg: string): never {
   process.exit(1);
 }
 
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+function openBrowser(url: string): void {
+  const opener =
+    process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+  try {
+    spawnSync(opener, [url], { stdio: "ignore" });
+  } catch {
+    // headless (dev server) — the user opens the URL manually.
+  }
+}
+
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const c of process.stdin) chunks.push(c as Buffer);
@@ -954,15 +965,84 @@ async function main(): Promise<void> {
   }
   switch (cmd) {
     case "login": {
-      const t = flag("token") ?? sub;
-      if (!t) die("usage: plm login --token <ck_…> [--api <url>]");
-      const cfg = loadConfig();
-      cfg.token = t;
       const a = flag("api");
-      if (a) cfg.apiUrl = a;
-      saveConfig(cfg);
-      const who = await api<{ email?: string; username?: string }>("/auth/whoami");
-      if (!who.ok) die(`token saved, but whoami failed: ${who.error}`);
+      if (a) {
+        const c = loadConfig();
+        c.apiUrl = a;
+        saveConfig(c);
+      }
+      // Escape hatch for CI/scripts: paste a token directly.
+      const explicit =
+        flag("token") ?? (sub?.startsWith("eak_") || sub?.startsWith("ck_") ? sub : undefined);
+      if (explicit) {
+        const c = loadConfig();
+        c.token = explicit;
+        saveConfig(c);
+        const who = await api<{ email?: string; username?: string }>("/auth/whoami");
+        if (!who.ok) die(`token saved, but whoami failed: ${who.error}`);
+        console.log(`✓ logged in as ${who.data?.email ?? who.data?.username} · ${apiUrl()}`);
+        break;
+      }
+      // OAuth 2.0 Device Authorization Grant via elvix — sign in in a browser,
+      // no token to paste. The hub tells us where elvix is + our client id.
+      const conf = await api<{ elvix_base_url: string; client_id: string }>("/auth/device-config");
+      if (!conf.ok || !conf.data?.client_id) {
+        die(`could not reach ${apiUrl()} for login config: ${conf.error ?? "no client_id"}`);
+      }
+      const { elvix_base_url, client_id } = conf.data;
+      const start = (await fetch(`${elvix_base_url}/api/v1/device/code`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ client_id }),
+      })
+        .then((r) => r.json())
+        .catch(() => null)) as {
+        device_code: string;
+        user_code: string;
+        verification_uri_complete: string;
+        expires_in: number;
+        interval: number;
+      } | null;
+      if (!start?.device_code) die("device authorization failed — is elvix reachable?");
+      console.log(
+        `\n  Sign in to PLMHub:\n\n    ${start.verification_uri_complete}\n\n  Confirm this code:  ${start.user_code}\n`,
+      );
+      openBrowser(start.verification_uri_complete);
+      const deadline = Date.now() + (start.expires_in ?? 600) * 1000;
+      let interval = (start.interval ?? 5) * 1000;
+      process.stdout.write("  Waiting for approval");
+      let eak: string | null = null;
+      while (Date.now() < deadline) {
+        await sleep(interval);
+        process.stdout.write(".");
+        const poll = (await fetch(`${elvix_base_url}/api/v1/device/token`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ device_code: start.device_code, client_id }),
+        })
+          .then((r) => r.json())
+          .catch(() => ({ error: "network" }))) as { access_token?: string; error?: string };
+        if (poll.access_token) {
+          eak = poll.access_token;
+          break;
+        }
+        if (poll.error === "slow_down") {
+          interval += 2000;
+          continue;
+        }
+        if (poll.error === "authorization_pending" || poll.error === "network") continue;
+        process.stdout.write("\n");
+        if (poll.error === "access_denied") die("access denied");
+        if (poll.error === "expired_token") die("the code expired — run: plm login");
+        die(`device login failed: ${poll.error}`);
+      }
+      process.stdout.write("\n");
+      if (!eak) die("timed out waiting for approval — run: plm login");
+      const c = loadConfig();
+      c.token = eak;
+      saveConfig(c);
+      const who = await api<{ email?: string; username?: string; role?: string }>("/auth/whoami");
+      if (!who.ok) die(`signed in but whoami failed: ${who.error}`);
       console.log(`✓ logged in as ${who.data?.email ?? who.data?.username} · ${apiUrl()}`);
       break;
     }
