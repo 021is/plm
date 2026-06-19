@@ -17,17 +17,24 @@ npm i -g @plmhub/cli
 ## Quick start
 
 ```bash
-plm login --token <your PLMHub API key>
+plm login                             # sign in via elvix in a browser (device flow)
 cd your-repo
 plm link my-project --app api
 plm db push --url "$DATABASE_URL"     # or: plm db push --json model.json
+```
+
+For CI or scripts (no browser), paste an elvix API key instead:
+
+```bash
+plm login --token <eak_…>
 ```
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `plm login --token <ck_…> [--api <url>]` | store your PLMHub API key (file mode 0600) |
+| `plm login` | sign in via elvix in a browser (device flow) |
+| `plm login --token <eak_…> [--api <url>]` | CI/scripts escape hatch: store an elvix API key (file mode 0600) |
 | `plm whoami` | who you are |
 | `plm link <project> [--app <name>]` | link this repo (`.plmhub/config.json`, committed) |
 | `plm db push --url <DATABASE_URL>` | introspect Postgres locally → push the ER model |

@@ -7,7 +7,7 @@
 ## Stack
 - Bun + TypeScript. Single dependency: `postgres` (porsager) — pure JS, runs under
   Node *and* Bun, bundles into the `--compile` binaries.
-- Auth: a PLMHub API key (`ck_…`) in `~/.plmhub/config.json` (0600; or `PLMHUB_TOKEN`).
+- Auth: an elvix API key (`eak_…`) in `~/.plmhub/config.json` (0600; or `PLMHUB_TOKEN`).
   API base in config `apiUrl` / `PLMHUB_API` (default http://127.0.0.1:5301).
 - **Repo state = `.plmhub/` DIRECTORY (like .git) — this is what makes plm offline-first:**
   `config.json` ({project, app?}) is COMMITTED (the team's shared link); `state.json`
@@ -21,7 +21,7 @@
   `If-None-Match` → 304 = use cache. Server keeps a per-project rev for cheap 304s.
 
 ## Commands (src/main.ts — switch router; unknown verbs PASS THROUGH to git)
-- `plm login --token <ck_…> [--api <url>]` · `plm logout` · `plm whoami`
+- `plm login` (elvix browser device flow — opens a browser, approve a code, stores the `eak_` token) · `plm logout` · `plm whoami`; CI/scripts escape hatch: `plm login --token <eak_…> [--api <url>]`
 - `plm link <project-slug> [--app <name>] [--db <id>]` → `.plmhub/config.json`
 - `plm db push --url <DATABASE_URL> | --json <file|->` · `plm db schema`
 - `plm queue [--flush]` → inspect/deliver the offline outbox

@@ -196,7 +196,8 @@ truth — an agent edits without a browser, and any open editor re-renders live.
 
 const HELP = `plm — git for your product model · push it to PLMHub
 
-  plm login --token <ck_…> [--api <url>]   store your PLMHub API key (0600)
+  plm login                                sign in via elvix in a browser (device flow)
+  plm login --token <eak_…> [--api <url>]  CI/scripts: store an elvix API key (0600)
   plm whoami                               show who you are
   plm link <project-slug> [--app <name>] [--db <id>]
                                            link this repo (.plmhub/config.json, committed)
@@ -1046,9 +1047,18 @@ async function main(): Promise<void> {
       console.log(`✓ logged in as ${who.data?.email ?? who.data?.username} · ${apiUrl()}`);
       break;
     }
+    case "logout": {
+      // Drop the stored token from ~/.plmhub/config.json (keep apiUrl).
+      const c = loadConfig();
+      const had = Boolean(c.token);
+      delete c.token;
+      saveConfig(c);
+      console.log(had ? "✓ logged out — token removed" : "already logged out");
+      break;
+    }
     case "whoami": {
       const who = await api<{ email?: string; username?: string; role?: string }>("/auth/whoami");
-      if (!who.ok) die(who.error ?? "not logged in — run: plm login --token <ck_…>");
+      if (!who.ok) die(who.error ?? "not logged in — run: plm login --token <eak_…>");
       console.log(`${who.data?.email ?? who.data?.username} · ${who.data?.role ?? ""} · ${apiUrl()}`);
       break;
     }
